@@ -164,6 +164,19 @@ function printProductionLabel(printWindow: Window | null = openProductionLabelWi
   printDocument.close();
 
   const openPrintDialog = async () => {
+    await Promise.all(
+      Array.from(printDocument.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]')).map(
+        (stylesheet) =>
+          stylesheet.sheet
+            ? Promise.resolve()
+            : new Promise<void>((resolve) => {
+                const finish = () => resolve();
+                stylesheet.addEventListener("load", finish, { once: true });
+                stylesheet.addEventListener("error", finish, { once: true });
+                window.setTimeout(finish, 5000);
+              }),
+      ),
+    );
     if ("fonts" in printDocument) {
       await printDocument.fonts.ready;
     }
@@ -177,11 +190,17 @@ function printProductionLabel(printWindow: Window | null = openProductionLabelWi
             }),
       ),
     );
+    await new Promise<void>((resolve) =>
+      printWindow.requestAnimationFrame(() =>
+        printWindow.requestAnimationFrame(() => resolve()),
+      ),
+    );
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 300));
     printWindow.focus();
     printWindow.print();
   };
 
-  window.setTimeout(openPrintDialog, 750);
+  window.setTimeout(openPrintDialog, 100);
 
   return true;
 }
