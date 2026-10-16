@@ -147,6 +147,7 @@ function printProductionLabel(printWindow: Window | null = openProductionLabelWi
           html, body { width: 100mm; height: 70mm; margin: 0; padding: 0; background: white; }
           body { overflow: hidden; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
           #print-production-label {
+            visibility: visible !important;
             box-sizing: border-box;
             width: 100mm !important;
             height: 70mm !important;
@@ -155,6 +156,7 @@ function printProductionLabel(printWindow: Window | null = openProductionLabelWi
             border-radius: 0 !important;
             box-shadow: none !important;
           }
+          #print-production-label * { visibility: visible !important; }
         </style>
       </head>
       <body>${label.outerHTML}</body>
