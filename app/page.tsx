@@ -1705,7 +1705,7 @@ function ProfitAndLoss() {
   const currentChange = change(latestWithData.revenue, previous?.revenue);
   const areaExpenses = expenses.filter((row) => row.area === area && row.expenseDate.slice(0, 4) === String(year));
   const saveSale = async () => { const amount = Number(sale.amount.replace(/\D/g, "")); if (!amount) return; setSaving(true); setError(""); try { const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "register-local-sale", sale: { ...sale, amount } }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error ?? "No se pudo guardar."); await load(); setSaleOpen(false); } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "No se pudo guardar."); } finally { setSaving(false); } };
-  const rows = [
+  const rows: Array<{ label: string; values: Array<number | null>; tone?: string; bold?: boolean; percent?: boolean; muted?: boolean; indent?: boolean }> = [
     { label: "VENTAS TOTALES", values: monthly.map((row) => row.revenue), tone: "bg-[#3b2931] text-white", bold: true },
     { label: "% VAR. MES ANTERIOR", values: monthly.map((row, index) => index ? change(row.revenue, monthly[index - 1].revenue) : null), percent: true, tone: "bg-[#f7f0f3] text-[#983f62]" },
     { label: "COSTO DE MERCADERÍA", values: monthly.map((row) => row.merchandise), bold: true },
