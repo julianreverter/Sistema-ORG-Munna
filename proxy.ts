@@ -14,13 +14,14 @@ export async function proxy(request: NextRequest) {
     },
   });
   const { data: { user } } = await supabase.auth.getUser();
-  const isLogin = request.nextUrl.pathname === "/login";
-  const isHealthcheck = request.nextUrl.pathname === "/api/health";
-  if (isHealthcheck) return response;
+  const pathname = request.nextUrl.pathname;
+  const isLogin = pathname === "/login";
+  const isPublicSystemRoute = pathname === "/api/health" || pathname === "/robots.txt" || pathname === "/sitemap.xml";
+  if (isPublicSystemRoute) return response;
   if (!user && !isLogin) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
-    url.searchParams.set("returnTo", request.nextUrl.pathname);
+    url.searchParams.set("returnTo", pathname);
     return NextResponse.redirect(url);
   }
   if (user && isLogin) {
