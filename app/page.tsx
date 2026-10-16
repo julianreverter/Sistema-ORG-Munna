@@ -759,6 +759,22 @@ function Production({
             </>
           )}
         </Button>
+        {saved && (
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              setSaveError("");
+              if (!printProductionLabel()) {
+                setSaveError("No pudimos abrir la impresión. Recargá la página y volvé a intentarlo.");
+              }
+            }}
+            className="mt-3 h-11 w-full rounded-xl"
+          >
+            <Printer />
+            Reimprimir etiqueta
+          </Button>
+        )}
         {saveError && <p className="mt-3 text-sm font-bold text-red-600">{saveError}</p>}
       </section>
       <section className="rounded-[26px] border bg-[#fff9fb] p-6">
