@@ -2,12 +2,11 @@
 
 import { FormEvent, useState } from "react";
 import Image from "next/image";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 
 export default function LoginPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -18,7 +17,7 @@ export default function LoginPage() {
     setLoading(true); setError("");
     const { error: authError } = await createClient().auth.signInWithPassword({ email, password });
     if (authError) { setError("El correo o la contraseña no son correctos."); setLoading(false); return; }
-    const returnTo = searchParams.get("returnTo");
+    const returnTo = new URLSearchParams(window.location.search).get("returnTo");
     router.replace(returnTo?.startsWith("/") ? returnTo : "/");
     router.refresh();
   }
