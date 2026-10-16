@@ -18,6 +18,8 @@
     "@base-ui/react": "^1.7.0",
     "@hookform/resolvers": "^5.7.1",
     "@shadcn/react": "^0.3.0",
+    "@supabase/ssr": "^0.12.7",
+    "@supabase/supabase-js": "^2.118.0",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "cmdk": "^1.1.1",
@@ -60,5 +62,5 @@
     "wrangler": "4.92.0"
   },
   "type": "module",
-  "displayName": "M\u00fcnna Control de F\u00e1brica"
+  "displayName": "Münna Control de Fábrica"
 }
