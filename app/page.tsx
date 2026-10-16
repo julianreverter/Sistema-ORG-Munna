@@ -117,26 +117,20 @@ type ProductionRecord = {
 type ProductionHistoryRow = { id: number; uniqueCode: string; productCode: string; productName: string; presentation: string; container: string; weightKg: number | null; units: number | null; responsible: string; status: string; costPerKgSnapshot?: number | null; producedAt: string; dispatchedAt: string | null; remittanceNumber: string | null; clientName: string | null };
 type StaffMember = { id: number; email: string; displayName: string; role: "produccion" | "encargado" | "administracion"; active: boolean };
 
-function printProductionLabel() {
-  const label = document.getElementById("print-production-label");
-  if (!label) return false;
-
-  const frame = document.createElement("iframe");
-  frame.setAttribute("aria-hidden", "true");
-  frame.style.position = "fixed";
-  frame.style.width = "1px";
-  frame.style.height = "1px";
-  frame.style.right = "0";
-  frame.style.bottom = "0";
-  frame.style.border = "0";
-  frame.style.opacity = "0";
-  document.body.appendChild(frame);
-
-  const printDocument = frame.contentDocument;
-  if (!printDocument) {
-    frame.remove();
-    return false;
+function openProductionLabelWindow() {
+  const printWindow = window.open("", "munna-production-label", "popup,width=900,height=700");
+  if (printWindow) {
+    printWindow.document.write("<!doctype html><title>Etiqueta Münna</title><p style='font-family:Arial;padding:24px'>Preparando etiqueta…</p>");
+    printWindow.document.close();
   }
+  return printWindow;
+}
+
+function printProductionLabel(printWindow: Window | null = openProductionLabelWindow()) {
+  const label = document.getElementById("print-production-label");
+  if (!label || !printWindow) return false;
+
+  const printDocument = printWindow.document;
 
   const styles = Array.from(document.querySelectorAll('link[rel="stylesheet"], style'))
     .map((node) => node.outerHTML)
@@ -181,18 +175,11 @@ function printProductionLabel() {
             }),
       ),
     );
-    frame.contentWindow?.addEventListener("afterprint", () => frame.remove(), { once: true });
-    frame.contentWindow?.focus();
-    frame.contentWindow?.print();
-    // Respaldo por si el navegador no emite el evento afterprint.
-    window.setTimeout(() => frame.remove(), 120000);
+    printWindow.focus();
+    printWindow.print();
   };
 
-  if (printDocument.readyState === "complete") {
-    window.setTimeout(openPrintDialog, 500);
-  } else {
-    frame.addEventListener("load", () => window.setTimeout(openPrintDialog, 250), { once: true });
-  }
+  window.setTimeout(openPrintDialog, 750);
 
   return true;
 }
@@ -730,6 +717,7 @@ function Production({
           disabled={!product || !selectedProduct || saved || saving || (isWeightProduct ? !weight.trim() : !quantity.trim())}
           onClick={async () => {
             if (!selectedProduct) return;
+            const printWindow = openProductionLabelWindow();
             setSaving(true);
             setSaveError("");
             try {
@@ -747,10 +735,11 @@ function Production({
                 presentation: selectedProduct.presentation,
               });
               setSaved(true);
-              if (!printProductionLabel()) {
-                setSaveError("La producción se guardó, pero no pudimos abrir la impresión. Volvé a intentarlo.");
+              if (!printProductionLabel(printWindow)) {
+                setSaveError("La producción se guardó, pero Chrome bloqueó la ventana de impresión. Habilitá las ventanas emergentes y usá Reimprimir etiqueta.");
               }
             } catch (error) {
+              printWindow?.close();
               setSaveError(error instanceof Error ? error.message : "No se pudo registrar la producción.");
             } finally {
               setSaving(false);
@@ -776,8 +765,9 @@ function Production({
             variant="outline"
             onClick={() => {
               setSaveError("");
-              if (!printProductionLabel()) {
-                setSaveError("No pudimos abrir la impresión. Recargá la página y volvé a intentarlo.");
+              const printWindow = openProductionLabelWindow();
+              if (!printProductionLabel(printWindow)) {
+                setSaveError("Chrome bloqueó la ventana de impresión. Habilitá las ventanas emergentes y volvé a intentarlo.");
               }
             }}
             className="mt-3 h-11 w-full rounded-xl"
