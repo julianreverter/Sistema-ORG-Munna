@@ -167,7 +167,10 @@ function printProductionLabel() {
     </html>`);
   printDocument.close();
 
-  window.setTimeout(async () => {
+  const openPrintDialog = async () => {
+    if ("fonts" in printDocument) {
+      await printDocument.fonts.ready;
+    }
     await Promise.all(
       Array.from(printDocument.images).map((image) =>
         image.complete
@@ -178,10 +181,18 @@ function printProductionLabel() {
             }),
       ),
     );
+    frame.contentWindow?.addEventListener("afterprint", () => frame.remove(), { once: true });
     frame.contentWindow?.focus();
     frame.contentWindow?.print();
-    window.setTimeout(() => frame.remove(), 3000);
-  }, 350);
+    // Respaldo por si el navegador no emite el evento afterprint.
+    window.setTimeout(() => frame.remove(), 120000);
+  };
+
+  if (printDocument.readyState === "complete") {
+    window.setTimeout(openPrintDialog, 500);
+  } else {
+    frame.addEventListener("load", () => window.setTimeout(openPrintDialog, 250), { once: true });
+  }
 
   return true;
 }
