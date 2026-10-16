@@ -1,0 +1,74 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "../vendor/shadcn-tailwind-4.13.0.css";
+
+@utility scrollbar-thin {
+  scrollbar-width: thin;
+}
+
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar { display: none; }
+}
+
+@utility scrollbar-gutter-stable {
+  scrollbar-gutter: stable;
+}
+
+:root {
+  --background: #fcf8fa; --foreground: #35252b; --card: #ffffff; --card-foreground: #35252b;
+  --popover: #ffffff; --popover-foreground: #35252b; --primary: #3c2931; --primary-foreground: #ffffff;
+  --secondary: #f8e7ee; --secondary-foreground: #733d53; --muted: #f7f0f3; --muted-foreground: #806d75;
+  --accent: #fae7ef; --accent-foreground: #8f3e5f; --destructive: #dc2626; --border: #eadde2;
+  --input: #e6d8de; --ring: #ed94b5; --radius: .9rem; --sidebar: #fff9fb; --sidebar-foreground: #4b3540;
+  --sidebar-primary: #a53d67; --sidebar-primary-foreground: #ffffff; --sidebar-accent: #f8dce7;
+  --sidebar-accent-foreground: #8d3658; --sidebar-border: #f1dbe4; --sidebar-ring: #ed94b5;
+}
+@theme inline {
+  --color-background: var(--background); --color-foreground: var(--foreground); --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground); --color-popover: var(--popover); --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary); --color-primary-foreground: var(--primary-foreground); --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground); --color-muted: var(--muted); --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent); --color-accent-foreground: var(--accent-foreground); --color-destructive: var(--destructive);
+  --color-border: var(--border); --color-input: var(--input); --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar); --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary); --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent); --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border); --color-sidebar-ring: var(--sidebar-ring);
+  --radius-sm: calc(var(--radius) - 4px); --radius-md: calc(var(--radius) - 2px); --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px); --font-sans: Arial, Helvetica, sans-serif;
+}
+* { border-color: var(--border); }
+body { background: var(--background); color: var(--foreground); font-family: Arial, Helvetica, sans-serif; }
+button { cursor: pointer; }
+.barcode { background: repeating-linear-gradient(90deg,#171217 0 2px,transparent 2px 4px,#171217 4px 5px,transparent 5px 8px,#171217 8px 11px,transparent 11px 13px); }
+.munna-hero { box-shadow: 0 24px 60px rgba(60,41,49,.18); }
+.production-label { aspect-ratio: 10 / 7; }
+.logo-monochrome { filter: grayscale(1) brightness(.6) contrast(1000%); }
+
+@media print {
+  body * { visibility: hidden !important; }
+  .print-remittance-dialog,
+  .print-remittance-dialog #print-remittance,
+  .print-remittance-dialog #print-remittance * { visibility: visible !important; }
+  .print-remittance-dialog {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+    max-height: none !important;
+    overflow: visible !important;
+    translate: none !important;
+    transform: none !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+  }
+  #print-remittance {
+    position: absolute !important;
+    inset: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+  }
+  @page { size: A4; margin: 12mm; }
+}
