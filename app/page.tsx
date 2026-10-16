@@ -116,6 +116,76 @@ type ProductionRecord = {
 };
 type ProductionHistoryRow = { id: number; uniqueCode: string; productCode: string; productName: string; presentation: string; container: string; weightKg: number | null; units: number | null; responsible: string; status: string; costPerKgSnapshot?: number | null; producedAt: string; dispatchedAt: string | null; remittanceNumber: string | null; clientName: string | null };
 type StaffMember = { id: number; email: string; displayName: string; role: "produccion" | "encargado" | "administracion"; active: boolean };
+
+function printProductionLabel() {
+  const label = document.getElementById("print-production-label");
+  if (!label) return false;
+
+  const frame = document.createElement("iframe");
+  frame.setAttribute("aria-hidden", "true");
+  frame.style.position = "fixed";
+  frame.style.width = "1px";
+  frame.style.height = "1px";
+  frame.style.right = "0";
+  frame.style.bottom = "0";
+  frame.style.border = "0";
+  frame.style.opacity = "0";
+  document.body.appendChild(frame);
+
+  const printDocument = frame.contentDocument;
+  if (!printDocument) {
+    frame.remove();
+    return false;
+  }
+
+  const styles = Array.from(document.querySelectorAll('link[rel="stylesheet"], style'))
+    .map((node) => node.outerHTML)
+    .join("\n");
+
+  printDocument.open();
+  printDocument.write(`<!doctype html>
+    <html lang="es">
+      <head>
+        <base href="${window.location.origin}/">
+        ${styles}
+        <style>
+          @page { size: 100mm 70mm; margin: 0; }
+          html, body { width: 100mm; height: 70mm; margin: 0; padding: 0; background: white; }
+          body { overflow: hidden; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+          #print-production-label {
+            box-sizing: border-box;
+            width: 100mm !important;
+            height: 70mm !important;
+            max-width: none !important;
+            margin: 0 !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+          }
+        </style>
+      </head>
+      <body>${label.outerHTML}</body>
+    </html>`);
+  printDocument.close();
+
+  window.setTimeout(async () => {
+    await Promise.all(
+      Array.from(printDocument.images).map((image) =>
+        image.complete
+          ? Promise.resolve()
+          : new Promise<void>((resolve) => {
+              image.addEventListener("load", () => resolve(), { once: true });
+              image.addEventListener("error", () => resolve(), { once: true });
+            }),
+      ),
+    );
+    frame.contentWindow?.focus();
+    frame.contentWindow?.print();
+    window.setTimeout(() => frame.remove(), 3000);
+  }, 350);
+
+  return true;
+}
+
 const menu = [
   ["inicio", "Inicio", LayoutDashboard],
   ["produccion", "Producción", IceCreamBowl],
@@ -666,6 +736,9 @@ function Production({
                 presentation: selectedProduct.presentation,
               });
               setSaved(true);
+              if (!printProductionLabel()) {
+                setSaveError("La producción se guardó, pero no pudimos abrir la impresión. Volvé a intentarlo.");
+              }
             } catch (error) {
               setSaveError(error instanceof Error ? error.message : "No se pudo registrar la producción.");
             } finally {
@@ -698,7 +771,7 @@ function Production({
           </div>
           <Printer className="text-[#b44570]" />
         </div>
-        <div className="production-label mx-auto max-w-xl overflow-hidden rounded-xl border-2 border-black bg-white p-4 text-black shadow-lg">
+        <div id="print-production-label" className="production-label mx-auto max-w-xl overflow-hidden rounded-xl border-2 border-black bg-white p-4 text-black shadow-lg">
           <div className="flex items-start justify-between border-b-2 border-black pb-2">
             <div className="relative h-9 w-44 overflow-hidden">
               <Image
