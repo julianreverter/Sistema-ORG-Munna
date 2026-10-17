@@ -149,14 +149,13 @@ function printProductionLabel(printWindow: Window | null = openProductionLabelWi
           #print-production-label {
             visibility: visible !important;
             box-sizing: border-box;
-            width: 128.2mm !important;
-            height: 89.7mm !important;
+            width: 100mm !important;
+            height: 70mm !important;
             max-width: none !important;
             margin: 0 !important;
             border-radius: 0 !important;
             box-shadow: none !important;
             overflow: hidden !important;
-            zoom: .78;
           }
           #print-production-label * { visibility: visible !important; }
         </style>
