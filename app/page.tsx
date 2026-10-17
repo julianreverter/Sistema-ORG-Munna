@@ -827,17 +827,17 @@ function Production({
               <p className="text-sm font-black">#{nextUniqueCode}</p>
             </div>
           </div>
-          <h3 className="mt-1 text-lg font-black uppercase leading-tight">
+          <h3 className="mt-2 text-xl font-black uppercase leading-tight">
             {selectedProduct?.name ?? "Seleccioná un producto"}
           </h3>
-          <p className="text-xs font-bold">{selectedProduct?.container ?? "—"}</p>
-          <div className="my-1 border-y-2 border-black py-1 text-center">
-            <p className="text-[9px] font-bold uppercase">{isWeightProduct ? "Peso neto" : "Contenido"}</p>
-            <p className="text-[28px] font-black leading-none">
+          <p className="text-sm font-bold">{selectedProduct?.container ?? "—"}</p>
+          <div className="my-2 border-y-2 border-black py-2 text-center">
+            <p className="text-[10px] font-bold uppercase">{isWeightProduct ? "Peso neto" : "Contenido"}</p>
+            <p className="text-3xl font-black leading-none">
               {isWeightProduct ? `${displayedWeight} kg` : `${quantity || "0"} unidades`}
             </p>
           </div>
-          <div className="grid grid-cols-3 gap-2 text-[8px] leading-[9px]">
+          <div className="grid grid-cols-3 gap-2 text-[10px] leading-tight">
             <p>
               <b>Elaboración</b>
               <br />
@@ -854,13 +854,13 @@ function Production({
               270826-CHM-01
             </p>
           </div>
-          <p className="mt-1 line-clamp-2 text-[7px] leading-[8px]">
+          <p className="mt-2 line-clamp-2 text-[8px] leading-[10px]">
             <b>Ingredientes:</b>{" "}
             {selectedProduct?.ingredients || "Pendientes de completar."}
           </p>
-          <p className="mt-0.5 text-[7px] font-black uppercase leading-[8px]">Contiene leche y derivados.</p>
-          <div className="mt-1 grid grid-cols-[1fr_145px] gap-2 border-t border-black pt-1">
-            <div className="text-[7px] leading-[8px]">
+          <p className="mt-1 text-[8px] font-black uppercase leading-[10px]">Contiene leche y derivados.</p>
+          <div className="mt-2 grid grid-cols-[1fr_155px] gap-3 border-t border-black pt-2">
+            <div className="text-[8px] leading-[10px]">
               <p className="font-black">INDUSTRIA ARGENTINA</p>
               <p>Elaborado por: Julián Reverter</p>
               <p>Planta: Juan B. Justo 1531, Pergamino, Bs. As.</p>
@@ -868,8 +868,8 @@ function Production({
               <p><b>RNE:</b> pendiente · <b>RNPA:</b> pendiente</p>
             </div>
             <div>
-              <div className="barcode h-7 w-full" />
-              <p className="mt-0.5 text-center font-mono text-[8px] tracking-[.26em]">{nextUniqueCode}</p>
+              <div className="barcode h-8 w-full" />
+              <p className="mt-0.5 text-center font-mono text-[9px] tracking-[.26em]">{nextUniqueCode}</p>
             </div>
           </div>
         </div>
