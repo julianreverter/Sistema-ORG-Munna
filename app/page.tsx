@@ -961,7 +961,7 @@ function Stock({ records }: { records: ProductionRecord[] }) {
   const [query, setQuery] = useState("");
   const shiftKg = records.reduce((total, record) => total + (record.weight ?? 0), 0);
   const rows = useMemo(() => {
-      const grouped = new Map<string, { code: string; name: string; pack: string; units: number; kgValue: number; status: string }>();
+      const grouped = new Map<string, { code: string; name: string; pack: string; units: number; kgValue: number; status: string; uniqueCodes: string[] }>();
       for (const record of records) {
         const current = grouped.get(record.productCode) ?? {
           code: record.productCode,
@@ -970,9 +970,11 @@ function Stock({ records }: { records: ProductionRecord[] }) {
           units: 0,
           kgValue: 0,
           status: "Ingresado hoy",
+          uniqueCodes: [],
         };
         current.units += record.units ?? 1;
         current.kgValue += record.weight ?? 0;
+        current.uniqueCodes.push(record.uniqueCode);
         grouped.set(record.productCode, current);
       }
       const producedRows = [...grouped.values()].map((row) => ({
@@ -982,9 +984,10 @@ function Stock({ records }: { records: ProductionRecord[] }) {
         units: row.units,
         kg: row.kgValue > 0 ? row.kgValue.toFixed(3).replace(".", ",") : "—",
         status: row.status,
+        uniqueCodes: row.uniqueCodes,
       }));
-      return [...producedRows, ...stockRows].filter((r) =>
-        `${r.name} ${r.code} ${r.pack}`
+      return [...producedRows, ...stockRows.map((row) => ({ ...row, uniqueCodes: [] as string[] }))].filter((r) =>
+        `${r.name} ${r.code} ${r.pack} ${r.uniqueCodes.join(" ")}`
           .toLowerCase()
           .includes(query.toLowerCase()),
       );
@@ -1022,7 +1025,10 @@ function Stock({ records }: { records: ProductionRecord[] }) {
         <TableBody>
           {rows.map((row) => (
             <TableRow key={row.code}>
-              <TableCell className="font-mono text-xs">{row.code}</TableCell>
+              <TableCell className="font-mono text-xs">
+                {row.code}
+                {row.uniqueCodes.length > 0 && <div className="mt-1 max-w-56 whitespace-normal font-sans text-[10px] text-muted-foreground">Unidades: {row.uniqueCodes.join(", ")}</div>}
+              </TableCell>
               <TableCell className="font-bold">{row.name}</TableCell>
               <TableCell>{row.pack}</TableCell>
               <TableCell className="text-right font-black">
@@ -2160,10 +2166,26 @@ export default function Home() {
               records={shiftRecords}
               onRegister={async (record) => {
                 const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "register-production", record }) });
-                const result = await response.json() as { error?: string };
+                const result = await response.json() as { error?: string; unit?: { id: number; status?: string; created_at?: string } };
                 if (!response.ok) throw new Error(result.error ?? "No se pudo registrar la producción.");
                 setShiftRecords((current) => [...current, record]);
                 setProductionRecords((current) => [...current, record]);
+                setProductionHistory((current) => [{
+                  id: Number(result.unit?.id ?? Date.now()),
+                  uniqueCode: record.uniqueCode,
+                  productCode: record.productCode,
+                  productName: record.productName,
+                  presentation: record.presentation,
+                  container: record.container,
+                  weightKg: record.weight,
+                  units: record.units,
+                  responsible: record.responsible,
+                  status: result.unit?.status ?? "stock",
+                  producedAt: result.unit?.created_at ?? new Date().toISOString(),
+                  dispatchedAt: null,
+                  remittanceNumber: null,
+                  clientName: null,
+                }, ...current]);
                 setNextUniqueCode((current) => String(Number(current) + 1).padStart(6, "0"));
               }}
               onFinalize={() => setShiftRecords([])}
