@@ -810,7 +810,7 @@ function Production({
           </div>
           <Printer className="text-[#b44570]" />
         </div>
-        <div id="print-production-label" className="production-label mx-auto max-w-xl overflow-hidden rounded-xl border-2 border-black bg-white p-2 text-black shadow-lg">
+        <div id="print-production-label" className="production-label relative mx-auto max-w-xl overflow-hidden rounded-xl border-2 border-black bg-white p-2 pb-[58px] text-black shadow-lg">
           <div className="flex items-start justify-between border-b-2 border-black pb-1">
             <div className="relative h-7 w-40 overflow-hidden">
               <Image
@@ -859,7 +859,7 @@ function Production({
             {selectedProduct?.ingredients || "Pendientes de completar."}
           </p>
           <p className="mt-1 text-[8px] font-black uppercase leading-[10px]">Contiene leche y derivados.</p>
-          <div className="mt-2 grid grid-cols-[1fr_155px] gap-3 border-t border-black pt-2">
+          <div className="absolute bottom-2 left-2 right-2 grid grid-cols-[1fr_155px] gap-3 border-t border-black bg-white pt-1">
             <div className="text-[8px] leading-[10px]">
               <p className="font-black">INDUSTRIA ARGENTINA</p>
               <p>Elaborado por: Julián Reverter</p>
