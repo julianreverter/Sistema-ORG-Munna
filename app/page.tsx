@@ -959,9 +959,28 @@ function Production({
 
 function Stock({ records }: { records: ProductionRecord[] }) {
   const [query, setQuery] = useState("");
-  const normalizedQuery = query.trim().replace(/^#/, "").toLowerCase();
+  const normalizedQuery = query.trim().toLowerCase();
+  const compactQuery = normalizedQuery.replace(/[^a-z0-9]/g, "");
   const shiftKg = records.reduce((total, record) => total + (record.weight ?? 0), 0);
-  const rows = useMemo(() => {
+  const { rows, exactCodeMatch } = useMemo(() => {
+      const exactRecord = compactQuery
+        ? records.find((record) => record.uniqueCode.toLowerCase().replace(/[^a-z0-9]/g, "") === compactQuery)
+        : undefined;
+      if (exactRecord) {
+        return {
+          exactCodeMatch: true,
+          rows: [{
+            key: `unit-${exactRecord.uniqueCode}`,
+            code: exactRecord.productCode,
+            name: exactRecord.productName,
+            pack: exactRecord.container,
+            units: exactRecord.units ?? 1,
+            kg: exactRecord.weight != null ? exactRecord.weight.toFixed(3).replace(".", ",") : "—",
+            status: "En stock",
+            uniqueCodes: [exactRecord.uniqueCode],
+          }],
+        };
+      }
       const grouped = new Map<string, { code: string; name: string; pack: string; units: number; kgValue: number; status: string; uniqueCodes: string[] }>();
       for (const record of records) {
         const current = grouped.get(record.productCode) ?? {
@@ -979,6 +998,7 @@ function Stock({ records }: { records: ProductionRecord[] }) {
         grouped.set(record.productCode, current);
       }
       const producedRows = [...grouped.values()].map((row) => ({
+        key: `product-${row.code}`,
         code: row.code,
         name: row.name,
         pack: row.pack,
@@ -987,20 +1007,23 @@ function Stock({ records }: { records: ProductionRecord[] }) {
         status: row.status,
         uniqueCodes: row.uniqueCodes,
       }));
-      return [...producedRows, ...stockRows.map((row) => ({ ...row, uniqueCodes: [] as string[] }))].filter((r) =>
-        `${r.name} ${r.code} ${r.pack} ${r.uniqueCodes.join(" ")}`
-          .toLowerCase()
-          .includes(normalizedQuery),
-      );
-    }, [normalizedQuery, records]);
+      return {
+        exactCodeMatch: false,
+        rows: producedRows.filter((row) => {
+          const haystack = `${row.name} ${row.code} ${row.pack} ${row.uniqueCodes.join(" ")}`.toLowerCase();
+          return !normalizedQuery || haystack.includes(normalizedQuery) || haystack.replace(/[^a-z0-9]/g, "").includes(compactQuery);
+        }),
+      };
+    }, [compactQuery, normalizedQuery, records]);
   return (
     <section className="rounded-[26px] border bg-white p-5 shadow-sm">
       <div className="mb-5 flex flex-col justify-between gap-4 md:flex-row md:items-end">
         <div>
           <h2 className="text-2xl font-black">Stock disponible en fábrica</h2>
           <p className="text-sm text-muted-foreground">
-            {286 + records.length} unidades · {(1184.2 + shiftKg).toLocaleString("es-AR", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg netos
+            {records.length} unidades etiquetadas · {shiftKg.toLocaleString("es-AR", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg netos
           </p>
+          {exactCodeMatch && <p className="mt-1 text-xs font-bold text-emerald-700">Código encontrado: esta unidad está disponible en fábrica.</p>}
         </div>
         <div className="relative w-full md:w-80">
           <Search className="absolute left-3 top-3 size-4 text-muted-foreground" />
@@ -1025,8 +1048,9 @@ function Stock({ records }: { records: ProductionRecord[] }) {
           </TableRow>
         </TableHeader>
         <TableBody>
+          {rows.length === 0 && <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">No hay stock disponible para esta búsqueda.</TableCell></TableRow>}
           {rows.map((row) => (
-            <TableRow key={row.code}>
+            <TableRow key={row.key}>
               <TableCell className="font-mono text-xs">
                 {row.code}
               </TableCell>
@@ -1043,10 +1067,8 @@ function Stock({ records }: { records: ProductionRecord[] }) {
                 <Badge
                   variant="outline"
                   className={
-                    row.status === "Bajo"
-                      ? "border-amber-200 bg-amber-50 text-amber-700"
-                      : row.status === "Ingresado hoy"
-                        ? "border-[#efc8d7] bg-[#fff5f8] text-[#a94068]"
+                    row.status === "Ingresado hoy"
+                      ? "border-[#efc8d7] bg-[#fff5f8] text-[#a94068]"
                       : "border-emerald-200 bg-emerald-50 text-emerald-700"
                   }
                 >
