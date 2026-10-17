@@ -959,6 +959,7 @@ function Production({
 
 function Stock({ records }: { records: ProductionRecord[] }) {
   const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().replace(/^#/, "").toLowerCase();
   const shiftKg = records.reduce((total, record) => total + (record.weight ?? 0), 0);
   const rows = useMemo(() => {
       const grouped = new Map<string, { code: string; name: string; pack: string; units: number; kgValue: number; status: string; uniqueCodes: string[] }>();
@@ -989,9 +990,9 @@ function Stock({ records }: { records: ProductionRecord[] }) {
       return [...producedRows, ...stockRows.map((row) => ({ ...row, uniqueCodes: [] as string[] }))].filter((r) =>
         `${r.name} ${r.code} ${r.pack} ${r.uniqueCodes.join(" ")}`
           .toLowerCase()
-          .includes(query.toLowerCase()),
+          .includes(normalizedQuery),
       );
-    }, [query, records]);
+    }, [normalizedQuery, records]);
   return (
     <section className="rounded-[26px] border bg-white p-5 shadow-sm">
       <div className="mb-5 flex flex-col justify-between gap-4 md:flex-row md:items-end">
@@ -1006,7 +1007,7 @@ function Stock({ records }: { records: ProductionRecord[] }) {
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Buscar producto o código"
+            placeholder="Buscar producto, código o código de barra"
             className="h-10 rounded-xl pl-9"
           />
         </div>
@@ -1015,6 +1016,7 @@ function Stock({ records }: { records: ProductionRecord[] }) {
         <TableHeader>
           <TableRow>
             <TableHead>Código</TableHead>
+            <TableHead>Códigos de barra</TableHead>
             <TableHead>Producto</TableHead>
             <TableHead>Presentación</TableHead>
             <TableHead className="text-right">Unidades</TableHead>
@@ -1027,7 +1029,9 @@ function Stock({ records }: { records: ProductionRecord[] }) {
             <TableRow key={row.code}>
               <TableCell className="font-mono text-xs">
                 {row.code}
-                {row.uniqueCodes.length > 0 && <div className="mt-1 max-w-56 whitespace-normal font-sans text-[10px] text-muted-foreground">Unidades: {row.uniqueCodes.join(", ")}</div>}
+              </TableCell>
+              <TableCell>
+                {row.uniqueCodes.length > 0 ? <div className="flex max-w-72 flex-wrap gap-1">{row.uniqueCodes.map((code) => <Badge key={code} variant="outline" className="font-mono text-[10px]">#{code}</Badge>)}</div> : <span className="text-xs text-muted-foreground">—</span>}
               </TableCell>
               <TableCell className="font-bold">{row.name}</TableCell>
               <TableCell>{row.pack}</TableCell>
