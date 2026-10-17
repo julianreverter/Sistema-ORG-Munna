@@ -149,6 +149,7 @@ function printProductionLabel(printWindow: Window | null = openProductionLabelWi
           #print-production-label {
             visibility: visible !important;
             box-sizing: border-box;
+            position: relative !important;
             width: 100mm !important;
             height: 70mm !important;
             max-width: none !important;
@@ -158,6 +159,25 @@ function printProductionLabel(printWindow: Window | null = openProductionLabelWi
             overflow: hidden !important;
           }
           #print-production-label * { visibility: visible !important; }
+          #print-production-label > div:last-child {
+            position: absolute !important;
+            left: 2mm !important;
+            right: 2mm !important;
+            bottom: 2mm !important;
+            display: grid !important;
+            grid-template-columns: 1fr 41mm !important;
+            gap: 3mm !important;
+            background: white !important;
+            border-top: 1px solid black !important;
+            padding-top: 1mm !important;
+            z-index: 10 !important;
+          }
+          #print-production-label .barcode {
+            display: block !important;
+            width: 100% !important;
+            height: 8mm !important;
+            background: repeating-linear-gradient(90deg,#171217 0 2px,transparent 2px 4px,#171217 4px 5px,transparent 5px 8px,#171217 8px 11px,transparent 11px 13px) !important;
+          }
         </style>
       </head>
       <body>${label.outerHTML}</body>
