@@ -1070,9 +1070,13 @@ const demoStockUnits: ProductionRecord[] = [
 function ProductionHistory({ rows }: { rows: ProductionHistoryRow[] }) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("Todos");
+  const normalizedQuery = query.trim().toLowerCase();
+  const compactQuery = normalizedQuery.replace(/[^a-z0-9]/g, "");
   const filtered = rows.filter((row) => {
-    const matchesQuery = `${row.uniqueCode} ${row.productCode} ${row.productName} ${row.responsible} ${row.clientName ?? ""} ${row.remittanceNumber ?? ""}`.toLowerCase().includes(query.toLowerCase());
-    return matchesQuery && (status === "Todos" || (status === "En stock" ? row.status === "stock" : row.status === "dispatched"));
+    const haystack = `${row.uniqueCode} ${row.productCode} ${row.productName} ${row.responsible} ${row.clientName ?? ""} ${row.remittanceNumber ?? ""}`.toLowerCase();
+    const compactHaystack = haystack.replace(/[^a-z0-9]/g, "");
+    const matchesQuery = !normalizedQuery || haystack.includes(normalizedQuery) || compactHaystack.includes(compactQuery);
+    return matchesQuery && (status === "Todos" || (status === "En stock" ? row.status === "stock" : row.status === "despachado"));
   });
   const exportExcel = () => {
     const escape = (value: unknown) => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
