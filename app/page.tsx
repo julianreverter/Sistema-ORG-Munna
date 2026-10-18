@@ -1762,7 +1762,7 @@ function printRemittanceA4(remittance: RemittanceRecord) {
           html, body { margin: 0; padding: 0; background: #fff; color: #111; font-family: Arial, Helvetica, sans-serif; font-size: 7pt; }
           .sheet { width: 100%; }
           .header { display: grid; grid-template-columns: 1fr auto; align-items: start; gap: 5mm; padding-bottom: 2mm; border-bottom: 1.5px solid #111; }
-          .logo { width: 46mm; height: 9mm; object-fit: cover; object-position: center 42%; filter: grayscale(1) contrast(180%); }
+          .logo { width: 52mm; height: 11mm; object-fit: cover; object-position: center 42%; filter: grayscale(1) brightness(.55) contrast(1000%); }
           .company { margin-top: .8mm; color: #222; font-size: 5.8pt; line-height: 1.15; }
           .document { min-width: 45mm; border: 1.5px solid #111; padding: 1.5mm 2mm; text-align: right; }
           .document .type { font-size: 6.5pt; font-weight: 700; letter-spacing: 1px; }
