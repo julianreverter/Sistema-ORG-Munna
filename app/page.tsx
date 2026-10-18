@@ -1734,9 +1734,8 @@ function printRemittanceA4(remittance: RemittanceRecord) {
   const rows = remittance.items.map((item) => `
     <tr>
       <td class="code">${escapeHtml(item.uniqueCode)}</td>
-      <td>
-        <strong>${escapeHtml(item.productName)}</strong>
-        <small>${escapeHtml(item.productCode)} · ${escapeHtml(item.presentation || item.container)}</small>
+      <td class="product">
+        <strong>${escapeHtml(item.productName)}</strong><span class="detail"> · ${escapeHtml(item.productCode)} · ${escapeHtml(item.presentation || item.container)}</span>
       </td>
       <td>${escapeHtml(formatQuantity(item))}</td>
       <td class="number">${escapeHtml(Number(item.discountPct).toLocaleString("es-AR", { maximumFractionDigits: 2 }))}%</td>
@@ -1745,6 +1744,11 @@ function printRemittanceA4(remittance: RemittanceRecord) {
   const status = String(remittance.status ?? "").toLowerCase().includes("anul") ? "ANULADO" : "CONFIRMADO";
   const date = new Date(remittance.createdAt).toLocaleString("es-AR");
   const totalKg = formatNumber(remittance.totalKg);
+  const densityClass = remittance.items.length >= 36
+    ? "ultra-compact"
+    : remittance.items.length >= 28
+      ? "compact"
+      : "";
 
   printWindow.document.open();
   printWindow.document.write(`<!doctype html>
@@ -1753,47 +1757,54 @@ function printRemittanceA4(remittance: RemittanceRecord) {
         <meta charset="utf-8">
         <title>Remito ${escapeHtml(remittance.remittanceNumber)}</title>
         <style>
-          @page { size: A4 portrait; margin: 12mm; }
+          @page { size: A4 portrait; margin: 8mm; }
           * { box-sizing: border-box; }
-          html, body { margin: 0; padding: 0; background: #fff; color: #111; font-family: Arial, Helvetica, sans-serif; font-size: 10pt; }
+          html, body { margin: 0; padding: 0; background: #fff; color: #111; font-family: Arial, Helvetica, sans-serif; font-size: 7pt; }
           .sheet { width: 100%; }
-          .header { display: grid; grid-template-columns: 1fr auto; align-items: start; gap: 12mm; padding-bottom: 6mm; border-bottom: 2px solid #111; }
-          .logo { width: 62mm; height: 16mm; object-fit: cover; object-position: center 42%; filter: grayscale(1) contrast(180%); }
-          .company { margin-top: 2mm; color: #333; font-size: 8.5pt; line-height: 1.4; }
-          .document { min-width: 58mm; border: 2px solid #111; padding: 4mm; text-align: right; }
-          .document .type { font-size: 9pt; font-weight: 700; letter-spacing: 1.5px; }
-          .document .number { margin-top: 1mm; font-family: "Courier New", monospace; font-size: 17pt; font-weight: 800; }
-          .document .status { display: inline-block; margin-top: 2mm; padding: 1mm 2.5mm; border: 1px solid #111; font-size: 8pt; font-weight: 700; }
-          .meta { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 0; margin: 6mm 0; border: 1px solid #111; }
-          .meta > div { min-height: 18mm; padding: 3mm; border-right: 1px solid #111; }
+          .header { display: grid; grid-template-columns: 1fr auto; align-items: start; gap: 5mm; padding-bottom: 2mm; border-bottom: 1.5px solid #111; }
+          .logo { width: 46mm; height: 9mm; object-fit: cover; object-position: center 42%; filter: grayscale(1) contrast(180%); }
+          .company { margin-top: .8mm; color: #222; font-size: 5.8pt; line-height: 1.15; }
+          .document { min-width: 45mm; border: 1.5px solid #111; padding: 1.5mm 2mm; text-align: right; }
+          .document .type { font-size: 6.5pt; font-weight: 700; letter-spacing: 1px; }
+          .document .number { margin-top: .4mm; font-family: "Courier New", monospace; font-size: 10.5pt; font-weight: 800; }
+          .document .status { display: inline-block; margin-top: .7mm; padding: .4mm 1.3mm; border: 1px solid #111; font-size: 5.5pt; font-weight: 700; }
+          .meta { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 0; margin: 2mm 0; border: 1px solid #111; }
+          .meta > div { min-height: 9mm; padding: 1.2mm; border-right: 1px solid #111; }
           .meta > div:last-child { border-right: 0; }
-          .label { display: block; margin-bottom: 1.5mm; color: #555; font-size: 7.5pt; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; }
-          .value { font-size: 10.5pt; font-weight: 700; }
+          .label { display: block; margin-bottom: .4mm; color: #333; font-size: 5.4pt; font-weight: 700; letter-spacing: .35px; text-transform: uppercase; }
+          .value { font-size: 7pt; font-weight: 700; }
           table { width: 100%; border-collapse: collapse; table-layout: fixed; }
           thead { display: table-header-group; }
-          th { padding: 3mm 2mm; border-top: 2px solid #111; border-bottom: 2px solid #111; background: #eee; text-align: left; font-size: 8pt; text-transform: uppercase; }
-          td { padding: 3mm 2mm; border-bottom: 1px solid #999; vertical-align: top; }
+          th { padding: 1mm .8mm; border-top: 1.5px solid #111; border-bottom: 1.5px solid #111; background: #eee; text-align: left; font-size: 5.8pt; line-height: 1; text-transform: uppercase; }
+          td { padding: .8mm .8mm; border-bottom: .6px solid #777; vertical-align: middle; font-size: 6.6pt; line-height: 1.05; }
           tr { break-inside: avoid; page-break-inside: avoid; }
-          th:nth-child(1), td:nth-child(1) { width: 22mm; }
-          th:nth-child(3), td:nth-child(3) { width: 35mm; }
-          th:nth-child(4), td:nth-child(4) { width: 24mm; }
-          th:nth-child(5), td:nth-child(5) { width: 32mm; }
-          td small { display: block; margin-top: 1mm; color: #555; font-size: 8pt; }
+          th:nth-child(1), td:nth-child(1) { width: 18mm; }
+          th:nth-child(3), td:nth-child(3) { width: 28mm; }
+          th:nth-child(4), td:nth-child(4) { width: 21mm; }
+          th:nth-child(5), td:nth-child(5) { width: 27mm; }
+          .product { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+          .detail { color: #444; font-size: 5.6pt; font-weight: 400; }
           .code { font-family: "Courier New", monospace; font-weight: 700; }
           .number { text-align: right; white-space: nowrap; }
-          .summary { width: 78mm; margin: 7mm 0 0 auto; border: 1px solid #111; }
-          .summary-row { display: flex; justify-content: space-between; gap: 8mm; padding: 2.5mm 3mm; border-bottom: 1px solid #aaa; }
-          .summary-row:last-child { border-bottom: 0; background: #eee; font-size: 13pt; font-weight: 800; }
-          .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 20mm; margin-top: 25mm; break-inside: avoid; page-break-inside: avoid; }
-          .signature { padding-top: 2mm; border-top: 1px solid #111; text-align: center; font-size: 8.5pt; }
-          .footer { margin-top: 12mm; padding-top: 3mm; border-top: 1px solid #999; color: #555; font-size: 8pt; text-align: center; }
+          .summary { width: 60mm; margin: 2mm 0 0 auto; border: 1px solid #111; break-inside: avoid; page-break-inside: avoid; }
+          .summary-row { display: flex; justify-content: space-between; gap: 5mm; padding: .8mm 1.5mm; border-bottom: 1px solid #999; font-size: 6.5pt; }
+          .summary-row:last-child { border-bottom: 0; background: #eee; font-size: 8.5pt; font-weight: 800; }
+          .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 14mm; margin-top: 9mm; break-inside: avoid; page-break-inside: avoid; }
+          .signature { padding-top: 1mm; border-top: 1px solid #111; text-align: center; font-size: 6pt; }
+          .footer { margin-top: 3mm; padding-top: 1mm; border-top: 1px solid #777; color: #444; font-size: 5.5pt; text-align: center; break-inside: avoid; page-break-inside: avoid; }
+          body.compact td { padding: .55mm .7mm; font-size: 6.1pt; line-height: 1; }
+          body.compact .detail { font-size: 5.2pt; }
+          body.ultra-compact td { padding: .35mm .6mm; font-size: 5.7pt; line-height: 1; }
+          body.ultra-compact .detail { display: none; }
+          body.ultra-compact .summary-row { padding: .6mm 1.3mm; }
+          body.ultra-compact .signatures { margin-top: 7mm; }
           @media print {
             html, body { width: auto; height: auto; }
             .sheet { page-break-after: auto; }
           }
         </style>
       </head>
-      <body>
+      <body class="${densityClass}">
         <main class="sheet">
           <header class="header">
             <div>
