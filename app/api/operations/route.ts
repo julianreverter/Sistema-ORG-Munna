@@ -47,11 +47,29 @@ function productionRow(row: Row) {
 
 function dispatchRow(row: Row) {
   const client = one(row.clients) as Row | null;
+  const items = Array.isArray(row.dispatch_items) ? row.dispatch_items : [];
   return {
     id: row.id, remittanceNumber: row.remittance_number, clientId: row.client_id,
     clientName: client?.name ?? "", totalKg: n(row.total_kg), subtotal: n(row.subtotal),
     discountTotal: n(row.discount_total), total: n(row.total), status: row.status,
     createdAt: row.created_at,
+    items: items.map((item: Row) => {
+      const unit = one(item.production_units) as Row | null;
+      const product = unit ? one(unit.products) as Row | null : null;
+      return {
+        uniqueCode: unit?.unique_code ?? "",
+        productCode: product?.code ?? "",
+        productName: product?.name ?? "",
+        presentation: product?.presentation ?? "",
+        container: product?.container ?? "",
+        family: product?.family ?? "",
+        weightKg: item.weight_kg == null ? null : n(item.weight_kg),
+        units: item.units == null ? null : n(item.units),
+        unitPrice: n(item.unit_price),
+        discountPct: n(item.discount_pct),
+        lineTotal: n(item.line_total),
+      };
+    }),
   };
 }
 
@@ -61,7 +79,7 @@ export async function GET() {
     const productionSelect = "*, products(code,name,family,presentation,container), responsible:profiles!production_units_responsible_id_fkey(display_name), dispatch_items(dispatches(remittance_number,clients(name)))";
     const [unitsResult, dispatchResult, paymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult] = await Promise.all([
       supabase.from("production_units").select(productionSelect).order("id", { ascending: false }).limit(5000),
-      supabase.from("dispatches").select("*, clients(name)").order("id", { ascending: false }).limit(5000),
+      supabase.from("dispatches").select("*, clients(name), dispatch_items(*, production_units(unique_code,weight_kg,units,products(code,name,family,presentation,container)))").order("id", { ascending: false }).limit(5000),
       supabase.from("customer_payments").select("*, clients(name)").order("id", { ascending: false }).limit(500),
       supabase.from("customer_account_adjustments").select("*, clients(name)").order("id", { ascending: false }).limit(500),
       supabase.from("operating_expenses").select("*").order("id", { ascending: false }).limit(5000),
@@ -83,6 +101,7 @@ export async function GET() {
       stock: allUnits.filter((u) => u.status === "stock"),
       productionHistory: canSeeCosts ? allUnits : allUnits.map(({ costPerKgSnapshot: _cost, ...unit }) => unit),
       recentDispatches: profile.role === "maestro_heladero" ? [] : allDispatches.slice(0, 50),
+      remittances: profile.role === "maestro_heladero" ? [] : allDispatches.slice(0, 500),
       customerPayments: canSeeFinancials ? (paymentsResult.data ?? []).map((r: Row) => ({ ...r, clientId: r.client_id, clientName: one(r.clients)?.name, paymentDate: r.payment_date, createdAt: r.created_at })) : [],
       customerAdjustments: canSeeFinancials ? (adjustmentsResult.data ?? []).map((r: Row) => ({ ...r, clientId: r.client_id, clientName: one(r.clients)?.name, movementDate: r.movement_date, movementType: r.movement_type, signedAmount: n(r.signed_amount), createdAt: r.created_at })) : [],
       operatingExpenses: canSeeFinancials ? (expensesResult.data ?? []).map((r: Row) => ({ ...r, expenseDate: r.expense_date, createdAt: r.created_at, amount: n(r.amount) })) : [],
