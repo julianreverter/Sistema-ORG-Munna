@@ -1682,20 +1682,76 @@ function Clients({ clients, setClients }: { clients: Client[]; setClients: State
   );
 }
 
-const remittanceRows = [
-  { number: "R-000184", date: "08/10/2026", client: "Franquicia Rojas", units: 13, kg: "17,855", subtotal: "$548.325", discount: "Por línea", total: "$283.163", status: "Confirmado" },
-  { number: "R-000183", date: "07/10/2026", client: "Sucursal Centenario", units: 12, kg: "79,260", subtotal: "$1.965.700", discount: "Por línea", total: "$982.850", status: "Confirmado" },
-  { number: "R-000182", date: "05/10/2026", client: "Evento ocasional", units: 8, kg: "58,410", subtotal: "$1.621.900", discount: "Sin descuento", total: "$1.621.900", status: "Confirmado" },
-];
+type RemittanceItem = {
+  uniqueCode: string;
+  productCode: string;
+  productName: string;
+  presentation: string;
+  container: string;
+  family: string;
+  weightKg: number | null;
+  units: number | null;
+  unitPrice: number;
+  discountPct: number;
+  lineTotal: number;
+};
+
+type RemittanceRecord = {
+  id: number;
+  remittanceNumber: string;
+  clientId: number;
+  clientName: string;
+  totalKg: number;
+  subtotal: number;
+  discountTotal: number;
+  total: number;
+  status: string;
+  createdAt: string;
+  items: RemittanceItem[];
+};
 
 function Remittances() {
-  const [selected, setSelected] = useState<(typeof remittanceRows)[number] | null>(null);
+  const [rows, setRows] = useState<RemittanceRecord[]>([]);
+  const [selected, setSelected] = useState<RemittanceRecord | null>(null);
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    fetch("/api/operations")
+      .then(async (response) => {
+        const data = await response.json() as { remittances?: RemittanceRecord[]; error?: string };
+        if (!response.ok) throw new Error(data.error ?? "No se pudieron cargar los remitos.");
+        if (active) setRows(data.remittances ?? []);
+      })
+      .catch((loadError) => active && setError(loadError instanceof Error ? loadError.message : "No se pudieron cargar los remitos."))
+      .finally(() => active && setLoading(false));
+    return () => { active = false; };
+  }, []);
+  const normalizedQuery = query.trim().toLowerCase();
+  const compactQuery = normalizedQuery.replace(/[^a-z0-9]/g, "");
+  const filtered = rows.filter((remittance) => {
+    const itemText = remittance.items.map((item) => `${item.uniqueCode} ${item.productCode} ${item.productName}`).join(" ");
+    const haystack = `${remittance.remittanceNumber} ${remittance.clientName} ${itemText}`.toLowerCase();
+    return !normalizedQuery || haystack.includes(normalizedQuery) || haystack.replace(/[^a-z0-9]/g, "").includes(compactQuery);
+  });
+  const statusLabel = (status: string) => status.toLowerCase().includes("anul") ? "Anulado" : "Confirmado";
+  const quantityLabel = (item: RemittanceItem) => item.weightKg != null
+    ? `${Number(item.weightKg).toLocaleString("es-AR", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg netos`
+    : `${item.units ?? 0} unidades`;
   return (
     <section className="rounded-[26px] border bg-white p-5 shadow-sm">
-      <div className="mb-5">
-        <h2 className="text-2xl font-black">Remitos</h2>
-        <p className="text-sm text-muted-foreground">Historial, detalle, descuentos y reimpresión.</p>
+      <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h2 className="text-2xl font-black">Remitos</h2>
+          <p className="text-sm text-muted-foreground">Historial real de despachos, detalle y reimpresión.</p>
+        </div>
+        <div className="relative w-full sm:max-w-sm">
+          <Search className="absolute left-3 top-3 size-4 text-muted-foreground" />
+          <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar remito, cliente, producto o código" className="pl-9" />
+        </div>
       </div>
+      {error && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">{error}</div>}
       <div className="overflow-hidden rounded-2xl border">
         <Table>
           <TableHeader className="bg-[#fff4f8]">
@@ -1703,7 +1759,7 @@ function Remittances() {
               <TableHead>Número</TableHead>
               <TableHead>Fecha</TableHead>
               <TableHead>Cliente</TableHead>
-              <TableHead>Unidades</TableHead>
+              <TableHead>Códigos</TableHead>
               <TableHead>Kg</TableHead>
               <TableHead>Descuento</TableHead>
               <TableHead className="text-right">Total</TableHead>
@@ -1711,15 +1767,17 @@ function Remittances() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {remittanceRows.map((remittance) => (
-              <TableRow key={remittance.number}>
-                <TableCell className="font-mono font-bold">{remittance.number}</TableCell>
-                <TableCell>{remittance.date}</TableCell>
-                <TableCell className="font-bold">{remittance.client}</TableCell>
-                <TableCell>{remittance.units}</TableCell>
-                <TableCell>{remittance.kg}</TableCell>
-                <TableCell>{remittance.discount}</TableCell>
-                <TableCell className="text-right font-black">{remittance.total}</TableCell>
+            {loading && <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">Cargando remitos…</TableCell></TableRow>}
+            {!loading && filtered.length === 0 && <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">{query ? "No hay remitos que coincidan con la búsqueda." : "Todavía no hay remitos generados."}</TableCell></TableRow>}
+            {!loading && filtered.map((remittance) => (
+              <TableRow key={remittance.id}>
+                <TableCell className="font-mono font-bold">{remittance.remittanceNumber}</TableCell>
+                <TableCell>{new Date(remittance.createdAt).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" })}</TableCell>
+                <TableCell className="font-bold">{remittance.clientName}</TableCell>
+                <TableCell>{remittance.items.length}</TableCell>
+                <TableCell>{Number(remittance.totalKg).toLocaleString("es-AR", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}</TableCell>
+                <TableCell>{remittance.discountTotal > 0 ? money(remittance.discountTotal) : "Sin descuento"}</TableCell>
+                <TableCell className="text-right font-black">{money(remittance.total)}</TableCell>
                 <TableCell className="text-right">
                   <Button variant="outline" size="sm" className="rounded-lg" onClick={() => setSelected(remittance)}>Ver remito</Button>
                 </TableCell>
@@ -1729,42 +1787,56 @@ function Remittances() {
         </Table>
       </div>
       <Dialog open={Boolean(selected)} onOpenChange={(open) => !open && setSelected(null)}>
-        <DialogContent className="print-remittance-dialog max-h-[90vh] overflow-y-auto sm:max-w-3xl">
+        <DialogContent className="print-remittance-dialog max-h-[90vh] overflow-y-auto sm:max-w-4xl">
           {selected && (
             <>
               <DialogHeader>
-                <DialogTitle>Remito {selected.number}</DialogTitle>
-                <DialogDescription>{selected.client} · {selected.date}</DialogDescription>
+                <DialogTitle>Remito {selected.remittanceNumber}</DialogTitle>
+                <DialogDescription>{selected.clientName} · {new Date(selected.createdAt).toLocaleString("es-AR")}</DialogDescription>
               </DialogHeader>
               <div id="print-remittance" className="rounded-2xl border bg-white p-5 text-black">
-                <div className="flex items-start justify-between border-b pb-4">
-                  <div className="relative h-10 w-56 overflow-hidden">
+                <div className="flex items-start justify-between border-b-2 border-black pb-4">
+                  <div className="relative h-12 w-60 overflow-hidden">
                     <Image
                       src="/munna-laboratorio.jpg"
                       fill
-                      sizes="224px"
+                      sizes="240px"
                       alt="Münna"
                       className="logo-monochrome object-cover"
                       style={{ objectPosition: "center 42%" }}
                     />
                   </div>
-                  <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">{selected.status}</Badge>
+                  <div className="text-right">
+                    <div className="text-xs font-bold uppercase">Remito</div>
+                    <div className="font-mono text-xl font-black">{selected.remittanceNumber}</div>
+                    <Badge className="mt-1 bg-emerald-100 text-emerald-800 hover:bg-emerald-100">{statusLabel(selected.status)}</Badge>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4 border-b py-4 text-sm sm:grid-cols-3">
+                  <div><span className="block text-xs font-bold uppercase text-muted-foreground">Destino</span><b>{selected.clientName}</b></div>
+                  <div><span className="block text-xs font-bold uppercase text-muted-foreground">Fecha</span><b>{new Date(selected.createdAt).toLocaleString("es-AR")}</b></div>
+                  <div><span className="block text-xs font-bold uppercase text-muted-foreground">Peso neto total</span><b>{Number(selected.totalKg).toLocaleString("es-AR", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg</b></div>
                 </div>
                 <Table>
                   <TableHeader>
                     <TableRow><TableHead>Código</TableHead><TableHead>Producto</TableHead><TableHead>Peso / cantidad</TableHead><TableHead>Descuento</TableHead><TableHead className="text-right">Importe final</TableHead></TableRow>
                   </TableHeader>
                   <TableBody>
-                    <TableRow><TableCell>004529</TableCell><TableCell>Chocolate Münna B.G</TableCell><TableCell>7,155 kg netos</TableCell><TableCell>50% · Helados</TableCell><TableCell className="text-right">$96.593</TableCell></TableRow>
-                    <TableRow><TableCell>004530</TableCell><TableCell>Pistacho B.G</TableCell><TableCell>7,080 kg netos</TableCell><TableCell>50% · Helados</TableCell><TableCell className="text-right">$106.200</TableCell></TableRow>
-                    <TableRow><TableCell>004531</TableCell><TableCell>Frutilla a la Crema B.C</TableCell><TableCell>3,620 kg netos</TableCell><TableCell>50% · Helados</TableCell><TableCell className="text-right">$48.870</TableCell></TableRow>
-                    <TableRow><TableCell>1201</TableCell><TableCell>Cuadrado Delicioso Brownie</TableCell><TableCell>10 cajas</TableCell><TableCell>30% · Pastelería</TableCell><TableCell className="text-right">$31.500</TableCell></TableRow>
+                    {selected.items.map((item) => (
+                      <TableRow key={item.uniqueCode}>
+                        <TableCell className="font-mono font-bold">{item.uniqueCode}</TableCell>
+                        <TableCell><b>{item.productName}</b><div className="text-xs text-muted-foreground">{item.productCode} · {item.presentation || item.container}</div></TableCell>
+                        <TableCell>{quantityLabel(item)}</TableCell>
+                        <TableCell>{Number(item.discountPct).toLocaleString("es-AR", { maximumFractionDigits: 2 })}%</TableCell>
+                        <TableCell className="text-right">{money(item.lineTotal)}</TableCell>
+                      </TableRow>
+                    ))}
                   </TableBody>
                 </Table>
                 <div className="ml-auto mt-5 max-w-sm space-y-2 text-sm">
-                  <div className="flex justify-between"><span>Subtotal</span><b>{selected.subtotal}</b></div>
-                  <div className="flex justify-between"><span>Descuentos aplicados</span><b>{selected.discount}</b></div>
-                  <div className="flex justify-between border-t pt-3 text-lg"><span>Total</span><b>{selected.total}</b></div>
+                  <div className="flex justify-between"><span>Subtotal</span><b>{money(selected.subtotal)}</b></div>
+                  <div className="flex justify-between"><span>Descuentos aplicados</span><b>- {money(selected.discountTotal)}</b></div>
+                  <div className="flex justify-between border-t-2 border-black pt-3 text-lg"><span>Total</span><b>{money(selected.total)}</b></div>
                 </div>
               </div>
               <DialogFooter>
