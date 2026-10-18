@@ -1710,6 +1710,149 @@ type RemittanceRecord = {
   items: RemittanceItem[];
 };
 
+function printRemittanceA4(remittance: RemittanceRecord) {
+  const printWindow = window.open("", "munna-remittance-a4", "popup,width=1000,height=850");
+  if (!printWindow) return;
+
+  const escapeHtml = (value: unknown) => String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+  const formatMoney = (value: number) => new Intl.NumberFormat("es-AR", {
+    style: "currency",
+    currency: "ARS",
+    maximumFractionDigits: 0,
+  }).format(Number(value ?? 0));
+  const formatNumber = (value: number) => Number(value ?? 0).toLocaleString("es-AR", {
+    minimumFractionDigits: 3,
+    maximumFractionDigits: 3,
+  });
+  const formatQuantity = (item: RemittanceItem) => item.weightKg != null
+    ? `${formatNumber(item.weightKg)} kg netos`
+    : `${Number(item.units ?? 0).toLocaleString("es-AR")} unidades`;
+  const rows = remittance.items.map((item) => `
+    <tr>
+      <td class="code">${escapeHtml(item.uniqueCode)}</td>
+      <td>
+        <strong>${escapeHtml(item.productName)}</strong>
+        <small>${escapeHtml(item.productCode)} · ${escapeHtml(item.presentation || item.container)}</small>
+      </td>
+      <td>${escapeHtml(formatQuantity(item))}</td>
+      <td class="number">${escapeHtml(Number(item.discountPct).toLocaleString("es-AR", { maximumFractionDigits: 2 }))}%</td>
+      <td class="number">${escapeHtml(formatMoney(item.lineTotal))}</td>
+    </tr>`).join("");
+  const status = String(remittance.status ?? "").toLowerCase().includes("anul") ? "ANULADO" : "CONFIRMADO";
+  const date = new Date(remittance.createdAt).toLocaleString("es-AR");
+  const totalKg = formatNumber(remittance.totalKg);
+
+  printWindow.document.open();
+  printWindow.document.write(`<!doctype html>
+    <html lang="es">
+      <head>
+        <meta charset="utf-8">
+        <title>Remito ${escapeHtml(remittance.remittanceNumber)}</title>
+        <style>
+          @page { size: A4 portrait; margin: 12mm; }
+          * { box-sizing: border-box; }
+          html, body { margin: 0; padding: 0; background: #fff; color: #111; font-family: Arial, Helvetica, sans-serif; font-size: 10pt; }
+          .sheet { width: 100%; }
+          .header { display: grid; grid-template-columns: 1fr auto; align-items: start; gap: 12mm; padding-bottom: 6mm; border-bottom: 2px solid #111; }
+          .logo { width: 62mm; height: 16mm; object-fit: cover; object-position: center 42%; filter: grayscale(1) contrast(180%); }
+          .company { margin-top: 2mm; color: #333; font-size: 8.5pt; line-height: 1.4; }
+          .document { min-width: 58mm; border: 2px solid #111; padding: 4mm; text-align: right; }
+          .document .type { font-size: 9pt; font-weight: 700; letter-spacing: 1.5px; }
+          .document .number { margin-top: 1mm; font-family: "Courier New", monospace; font-size: 17pt; font-weight: 800; }
+          .document .status { display: inline-block; margin-top: 2mm; padding: 1mm 2.5mm; border: 1px solid #111; font-size: 8pt; font-weight: 700; }
+          .meta { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 0; margin: 6mm 0; border: 1px solid #111; }
+          .meta > div { min-height: 18mm; padding: 3mm; border-right: 1px solid #111; }
+          .meta > div:last-child { border-right: 0; }
+          .label { display: block; margin-bottom: 1.5mm; color: #555; font-size: 7.5pt; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; }
+          .value { font-size: 10.5pt; font-weight: 700; }
+          table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+          thead { display: table-header-group; }
+          th { padding: 3mm 2mm; border-top: 2px solid #111; border-bottom: 2px solid #111; background: #eee; text-align: left; font-size: 8pt; text-transform: uppercase; }
+          td { padding: 3mm 2mm; border-bottom: 1px solid #999; vertical-align: top; }
+          tr { break-inside: avoid; page-break-inside: avoid; }
+          th:nth-child(1), td:nth-child(1) { width: 22mm; }
+          th:nth-child(3), td:nth-child(3) { width: 35mm; }
+          th:nth-child(4), td:nth-child(4) { width: 24mm; }
+          th:nth-child(5), td:nth-child(5) { width: 32mm; }
+          td small { display: block; margin-top: 1mm; color: #555; font-size: 8pt; }
+          .code { font-family: "Courier New", monospace; font-weight: 700; }
+          .number { text-align: right; white-space: nowrap; }
+          .summary { width: 78mm; margin: 7mm 0 0 auto; border: 1px solid #111; }
+          .summary-row { display: flex; justify-content: space-between; gap: 8mm; padding: 2.5mm 3mm; border-bottom: 1px solid #aaa; }
+          .summary-row:last-child { border-bottom: 0; background: #eee; font-size: 13pt; font-weight: 800; }
+          .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 20mm; margin-top: 25mm; break-inside: avoid; page-break-inside: avoid; }
+          .signature { padding-top: 2mm; border-top: 1px solid #111; text-align: center; font-size: 8.5pt; }
+          .footer { margin-top: 12mm; padding-top: 3mm; border-top: 1px solid #999; color: #555; font-size: 8pt; text-align: center; }
+          @media print {
+            html, body { width: auto; height: auto; }
+            .sheet { page-break-after: auto; }
+          }
+        </style>
+      </head>
+      <body>
+        <main class="sheet">
+          <header class="header">
+            <div>
+              <img class="logo" src="${window.location.origin}/munna-laboratorio.jpg" alt="Münna">
+              <div class="company">
+                Planta: Juan B. Justo 1531 · Pergamino, Buenos Aires<br>
+                Tel. 2477 667357
+              </div>
+            </div>
+            <div class="document">
+              <div class="type">REMITO</div>
+              <div class="number">${escapeHtml(remittance.remittanceNumber)}</div>
+              <div class="status">${status}</div>
+            </div>
+          </header>
+
+          <section class="meta">
+            <div><span class="label">Destino</span><span class="value">${escapeHtml(remittance.clientName)}</span></div>
+            <div><span class="label">Fecha y hora</span><span class="value">${escapeHtml(date)}</span></div>
+            <div><span class="label">Peso neto total</span><span class="value">${escapeHtml(totalKg)} kg</span></div>
+          </section>
+
+          <table>
+            <thead>
+              <tr><th>Código</th><th>Producto</th><th>Peso / cantidad</th><th class="number">Descuento</th><th class="number">Importe final</th></tr>
+            </thead>
+            <tbody>${rows || '<tr><td colspan="5">Sin productos registrados.</td></tr>'}</tbody>
+          </table>
+
+          <section class="summary">
+            <div class="summary-row"><span>Subtotal</span><strong>${escapeHtml(formatMoney(remittance.subtotal))}</strong></div>
+            <div class="summary-row"><span>Descuentos</span><strong>- ${escapeHtml(formatMoney(remittance.discountTotal))}</strong></div>
+            <div class="summary-row"><span>Total</span><strong>${escapeHtml(formatMoney(remittance.total))}</strong></div>
+          </section>
+
+          <section class="signatures">
+            <div class="signature">Entregó · Firma y aclaración</div>
+            <div class="signature">Recibió · Firma y aclaración</div>
+          </section>
+
+          <footer class="footer">Münna Gelateria · Remito generado por Sistema ORG</footer>
+        </main>
+      </body>
+    </html>`);
+  printWindow.document.close();
+
+  const openDialog = () => {
+    printWindow.focus();
+    printWindow.print();
+  };
+  const logo = printWindow.document.querySelector("img");
+  if (logo && !logo.complete) {
+    logo.addEventListener("load", () => window.setTimeout(openDialog, 150), { once: true });
+    logo.addEventListener("error", () => window.setTimeout(openDialog, 150), { once: true });
+  } else {
+    window.setTimeout(openDialog, 250);
+  }
+}
+
 function Remittances({ productionRows }: { productionRows: ProductionHistoryRow[] }) {
   const [rows, setRows] = useState<RemittanceRecord[]>([]);
   const [selected, setSelected] = useState<RemittanceRecord | null>(null);
@@ -1885,7 +2028,7 @@ function Remittances({ productionRows }: { productionRows: ProductionHistoryRow[
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setSelected(null)}>Cerrar</Button>
-                <Button onClick={() => window.print()} className="bg-[#3c2931] text-white"><Printer /> Imprimir remito</Button>
+                <Button onClick={() => printRemittanceA4(selected)} className="bg-[#3c2931] text-white"><Printer /> Imprimir remito A4</Button>
               </DialogFooter>
             </>
           )}
