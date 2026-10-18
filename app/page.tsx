@@ -117,35 +117,46 @@ type ProductionRecord = {
 type ProductionHistoryRow = { id: number; uniqueCode: string; productCode: string; productName: string; presentation: string; container: string; weightKg: number | null; units: number | null; responsible: string; status: string; costPerKgSnapshot?: number | null; producedAt: string; dispatchedAt: string | null; remittanceNumber: string | null; clientName: string | null };
 type StaffMember = { id: number; email: string; displayName: string; role: "produccion" | "encargado" | "administracion"; active: boolean };
 
-const CODE39_PATTERNS: Record<string, string> = {
-  "0": "nnwwnwnnn", "1": "wnnwnnnnw", "2": "nnwwnnnnw", "3": "wnwwnnnnn",
-  "4": "nnnwwnnnw", "5": "wnnwwnnnn", "6": "nnwwwnnnn", "7": "nnnwnnwnw",
-  "8": "wnnwnnwnn", "9": "nnwwnnwnn", "*": "nwnnwnwnn",
-};
+const CODE128_PATTERNS = [
+  "212222","222122","222221","121223","121322","131222","122213","122312","132212","221213","221312","231212",
+  "112232","122132","122231","113222","123122","123221","223211","221132","221231","213212","223112","312131",
+  "311222","321122","321221","312212","322112","322211","212123","212321","232121","111323","131123","131321",
+  "112313","132113","132311","211313","231113","231311","112133","112331","132131","113123","113321","133121",
+  "313121","211331","231131","213113","213311","213131","311123","311321","331121","312113","312311","332111",
+  "314111","221411","431111","111224","111422","121124","121421","141122","141221","112214","112412","122114",
+  "122411","142112","142211","241211","221114","413111","241112","134111","111242","121142","121241","114212",
+  "124112","124211","411212","421112","421211","212141","214121","412121","111143","111341","131141","114113",
+  "114311","411113","411311","113141","114131","311141","411131","211412","211214","211232","2331112",
+];
 
-function Code39Barcode({ value }: { value: string }) {
-  const encoded = `*${value.replace(/[^0-9]/g, "")}*`;
+function Code128Barcode({ value }: { value: string }) {
+  const digits = value.replace(/[^0-9]/g, "").padStart(6, "0");
+  const evenDigits = digits.length % 2 === 0 ? digits : `0${digits}`;
+  const data = evenDigits.match(/.{2}/g)?.map(Number) ?? [];
+  let checksum = 105;
+  data.forEach((code, index) => { checksum += code * (index + 1); });
+  const codes = [105, ...data, checksum % 103, 106];
   const bars: Array<{ x: number; width: number }> = [];
   let x = 0;
-  for (const character of encoded) {
-    const pattern = CODE39_PATTERNS[character];
+  for (const code of codes) {
+    const pattern = CODE128_PATTERNS[code];
     for (let index = 0; index < pattern.length; index += 1) {
-      const width = pattern[index] === "w" ? 3 : 1;
+      const width = Number(pattern[index]);
       if (index % 2 === 0) bars.push({ x, width });
       x += width;
     }
-    x += 1;
   }
   return (
     <svg
-      className="barcode-svg h-8 w-full"
-      viewBox={`-10 0 ${x + 20} 32`}
+      className="barcode-svg h-11 w-full"
+      viewBox={`-10 0 ${x + 20} 42`}
       preserveAspectRatio="none"
       role="img"
-      aria-label={`Código de barras ${value}`}
+      aria-label={`Código de barras ${digits}`}
+      shapeRendering="crispEdges"
     >
       {bars.map((bar, index) => (
-        <rect key={index} x={bar.x} y="0" width={bar.width} height="32" fill="#000" />
+        <rect key={index} x={bar.x} y="0" width={bar.width} height="42" fill="#000" />
       ))}
     </svg>
   );
@@ -195,19 +206,19 @@ function printProductionLabel(printWindow: Window | null = openProductionLabelWi
           #print-production-label * { visibility: visible !important; }
           #print-production-label {
             display: grid !important;
-            grid-template-rows: 9mm 13mm 11mm 8mm 8mm 15mm !important;
+            grid-template-rows: 9mm 14mm 13mm 10mm 18mm !important;
             padding: 2mm !important;
           }
           #print-production-label .label-footer {
             display: grid !important;
-            grid-template-columns: 1fr 43mm !important;
+            grid-template-columns: 1fr 45mm !important;
             gap: 2mm !important;
             min-height: 0 !important;
           }
           #print-production-label .barcode-svg {
             display: block !important;
             width: 100% !important;
-            height: 9mm !important;
+            height: 12mm !important;
           }
         </style>
       </head>
@@ -864,7 +875,7 @@ function Production({
         <div
           id="print-production-label"
           className="production-label mx-auto max-w-xl overflow-hidden rounded-xl border-2 border-black bg-white text-black shadow-lg"
-          style={{ display: "grid", gridTemplateRows: "9mm 13mm 11mm 8mm 8mm 15mm", padding: "2mm", boxSizing: "border-box" }}
+          style={{ display: "grid", gridTemplateRows: "9mm 14mm 13mm 10mm 18mm", padding: "2mm", boxSizing: "border-box" }}
         >
           <div className="flex min-h-0 items-center justify-between border-b-2 border-black">
             <div className="relative h-7 w-40 overflow-hidden">
@@ -903,22 +914,19 @@ function Production({
             <p><b>Lote</b><br />270826-CHM-01</p>
           </div>
 
-          <div className="min-h-0 overflow-hidden border-y border-black py-0.5 text-[7px] leading-[8px]">
-            <p className="line-clamp-2"><b>Ingredientes:</b> {selectedProduct?.ingredients || "Pendientes de completar."}</p>
-            <p className="font-black uppercase">Contiene leche y derivados.</p>
-          </div>
-
-          <div className="label-footer min-h-0 grid grid-cols-[1fr_163px] items-center gap-2 overflow-hidden">
-            <div className="text-[6px] leading-[7px]">
-              <p className="font-black">INDUSTRIA ARGENTINA</p>
+          <div className="label-footer min-h-0 grid grid-cols-[1fr_170px] items-start gap-2 overflow-hidden border-t border-black pt-1">
+            <div className="min-h-0 overflow-hidden text-[6px] leading-[7px]">
+              <p className="line-clamp-2"><b>Ingredientes:</b> {selectedProduct?.ingredients || "Pendientes de completar."}</p>
+              <p className="font-black uppercase">Contiene leche y derivados.</p>
+              <p className="mt-0.5 font-black">INDUSTRIA ARGENTINA</p>
               <p>Elaborado por: Julián Reverter</p>
               <p>Planta: Juan B. Justo 1531, Pergamino, Bs. As.</p>
               <p>Tel.: 2477 667357</p>
               <p><b>RNE:</b> pendiente · <b>RNPA:</b> pendiente</p>
             </div>
-            <div className="overflow-hidden">
-              <Code39Barcode value={nextUniqueCode} />
-              <p className="text-center font-mono text-[8px] leading-none tracking-[.22em]">{nextUniqueCode}</p>
+            <div className="overflow-hidden pt-1">
+              <Code128Barcode value={nextUniqueCode} />
+              <p className="text-center font-mono text-[9px] leading-none tracking-[.28em]">{nextUniqueCode}</p>
             </div>
           </div>
         </div>
