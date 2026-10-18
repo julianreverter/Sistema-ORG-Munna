@@ -139,7 +139,7 @@ function Code39Barcode({ value }: { value: string }) {
   return (
     <svg
       className="barcode-svg h-8 w-full"
-      viewBox={`0 0 ${x} 32`}
+      viewBox={`-10 0 ${x + 20} 32`}
       preserveAspectRatio="none"
       role="img"
       aria-label={`Código de barras ${value}`}
@@ -193,23 +193,21 @@ function printProductionLabel(printWindow: Window | null = openProductionLabelWi
             overflow: hidden !important;
           }
           #print-production-label * { visibility: visible !important; }
-          #print-production-label > div:last-child {
-            position: absolute !important;
-            left: 2mm !important;
-            right: 2mm !important;
-            bottom: 2mm !important;
+          #print-production-label {
             display: grid !important;
-            grid-template-columns: 1fr 41mm !important;
-            gap: 3mm !important;
-            background: white !important;
-            border-top: 1px solid black !important;
-            padding-top: 1mm !important;
-            z-index: 10 !important;
+            grid-template-rows: 9mm 13mm 11mm 8mm 8mm 15mm !important;
+            padding: 2mm !important;
+          }
+          #print-production-label .label-footer {
+            display: grid !important;
+            grid-template-columns: 1fr 43mm !important;
+            gap: 2mm !important;
+            min-height: 0 !important;
           }
           #print-production-label .barcode-svg {
             display: block !important;
             width: 100% !important;
-            height: 8mm !important;
+            height: 9mm !important;
           }
         </style>
       </head>
@@ -863,8 +861,12 @@ function Production({
           </div>
           <Printer className="text-[#b44570]" />
         </div>
-        <div id="print-production-label" className="production-label relative mx-auto max-w-xl overflow-hidden rounded-xl border-2 border-black bg-white p-2 pb-[58px] text-black shadow-lg">
-          <div className="flex items-start justify-between border-b-2 border-black pb-1">
+        <div
+          id="print-production-label"
+          className="production-label mx-auto max-w-xl overflow-hidden rounded-xl border-2 border-black bg-white text-black shadow-lg"
+          style={{ display: "grid", gridTemplateRows: "9mm 13mm 11mm 8mm 8mm 15mm", padding: "2mm", boxSizing: "border-box" }}
+        >
+          <div className="flex min-h-0 items-center justify-between border-b-2 border-black">
             <div className="relative h-7 w-40 overflow-hidden">
               <Image
                 src="/munna-laboratorio.jpg"
@@ -875,54 +877,48 @@ function Production({
                 style={{ objectPosition: "center 42%" }}
               />
             </div>
-            <div className="text-right">
-              <p className="text-[9px] font-bold">CÓDIGO ÚNICO</p>
+            <div className="text-right leading-tight">
+              <p className="text-[8px] font-bold">CÓDIGO ÚNICO</p>
               <p className="text-sm font-black">#{nextUniqueCode}</p>
             </div>
           </div>
-          <h3 className="mt-2 text-xl font-black uppercase leading-tight">
-            {selectedProduct?.name ?? "Seleccioná un producto"}
-          </h3>
-          <p className="text-sm font-bold">{selectedProduct?.container ?? "—"}</p>
-          <div className="my-1 border-y-2 border-black py-1 text-center">
-            <p className="text-[10px] font-bold uppercase">{isWeightProduct ? "Peso neto" : "Contenido"}</p>
-            <p className="text-[26px] font-black leading-none">
+
+          <div className="min-h-0 overflow-hidden border-b border-black py-1">
+            <h3 className="text-[18px] font-black uppercase leading-[18px]">
+              {selectedProduct?.name ?? "Seleccioná un producto"}
+            </h3>
+            <p className="text-[11px] font-bold leading-3">{selectedProduct?.container ?? "—"}</p>
+          </div>
+
+          <div className="flex min-h-0 flex-col items-center justify-center border-b-2 border-black text-center">
+            <p className="text-[8px] font-bold uppercase leading-none">{isWeightProduct ? "Peso neto" : "Contenido"}</p>
+            <p className="text-[24px] font-black leading-none">
               {isWeightProduct ? `${displayedWeight} kg` : `${quantity || "0"} unidades`}
             </p>
           </div>
-          <div className="grid grid-cols-3 gap-2 text-[10px] leading-tight">
-            <p>
-              <b>Elaboración</b>
-              <br />
-              27/08/2026
-            </p>
-            <p>
-              <b>Vencimiento</b>
-              <br />
-              27/08/2027
-            </p>
-            <p>
-              <b>Lote</b>
-              <br />
-              270826-CHM-01
-            </p>
+
+          <div className="grid min-h-0 grid-cols-3 items-center gap-2 overflow-hidden text-[8px] leading-[9px]">
+            <p><b>Elaboración</b><br />27/08/2026</p>
+            <p><b>Vencimiento</b><br />27/08/2027</p>
+            <p><b>Lote</b><br />270826-CHM-01</p>
           </div>
-          <p className="mt-2 line-clamp-2 text-[8px] leading-[10px]">
-            <b>Ingredientes:</b>{" "}
-            {selectedProduct?.ingredients || "Pendientes de completar."}
-          </p>
-          <p className="mt-1 text-[8px] font-black uppercase leading-[10px]">Contiene leche y derivados.</p>
-          <div className="absolute bottom-2 left-2 right-2 grid grid-cols-[1fr_155px] gap-3 border-t border-black bg-white pt-1">
-            <div className="text-[8px] leading-[10px]">
+
+          <div className="min-h-0 overflow-hidden border-y border-black py-0.5 text-[7px] leading-[8px]">
+            <p className="line-clamp-2"><b>Ingredientes:</b> {selectedProduct?.ingredients || "Pendientes de completar."}</p>
+            <p className="font-black uppercase">Contiene leche y derivados.</p>
+          </div>
+
+          <div className="label-footer min-h-0 grid grid-cols-[1fr_163px] items-center gap-2 overflow-hidden">
+            <div className="text-[6px] leading-[7px]">
               <p className="font-black">INDUSTRIA ARGENTINA</p>
               <p>Elaborado por: Julián Reverter</p>
               <p>Planta: Juan B. Justo 1531, Pergamino, Bs. As.</p>
               <p>Tel.: 2477 667357</p>
               <p><b>RNE:</b> pendiente · <b>RNPA:</b> pendiente</p>
             </div>
-            <div>
+            <div className="overflow-hidden">
               <Code39Barcode value={nextUniqueCode} />
-              <p className="mt-0.5 text-center font-mono text-[9px] tracking-[.26em]">{nextUniqueCode}</p>
+              <p className="text-center font-mono text-[8px] leading-none tracking-[.22em]">{nextUniqueCode}</p>
             </div>
           </div>
         </div>
