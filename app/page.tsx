@@ -1710,7 +1710,7 @@ type RemittanceRecord = {
   items: RemittanceItem[];
 };
 
-function Remittances() {
+function Remittances({ productionRows }: { productionRows: ProductionHistoryRow[] }) {
   const [rows, setRows] = useState<RemittanceRecord[]>([]);
   const [selected, setSelected] = useState<RemittanceRecord | null>(null);
   const [query, setQuery] = useState("");
@@ -1728,14 +1728,58 @@ function Remittances() {
       .finally(() => active && setLoading(false));
     return () => { active = false; };
   }, []);
+  const historyRemittances = Object.values(productionRows
+    .filter((row) => row.status === "despachado" && row.remittanceNumber)
+    .reduce<Record<string, RemittanceRecord>>((groups, row) => {
+      const number = row.remittanceNumber as string;
+      groups[number] ??= {
+        id: row.id,
+        remittanceNumber: number,
+        clientId: 0,
+        clientName: row.clientName ?? "Sin destino",
+        totalKg: 0,
+        subtotal: 0,
+        discountTotal: 0,
+        total: 0,
+        status: "emitido",
+        createdAt: row.dispatchedAt ?? row.producedAt,
+        items: [],
+      };
+      groups[number].totalKg += Number(row.weightKg ?? 0);
+      groups[number].items.push({
+        uniqueCode: row.uniqueCode,
+        productCode: row.productCode,
+        productName: row.productName,
+        presentation: row.presentation,
+        container: row.container,
+        family: "",
+        weightKg: row.weightKg,
+        units: row.units,
+        unitPrice: 0,
+        discountPct: 0,
+        lineTotal: 0,
+      });
+      return groups;
+    }, {}));
+  const mergedByNumber = new Map(historyRemittances.map((row) => [row.remittanceNumber, row]));
+  rows.forEach((row) => {
+    const historical = mergedByNumber.get(row.remittanceNumber);
+    mergedByNumber.set(row.remittanceNumber, {
+      ...historical,
+      ...row,
+      items: row.items?.length ? row.items : historical?.items ?? [],
+    });
+  });
+  const mergedRows = Array.from(mergedByNumber.values()).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   const normalizedQuery = query.trim().toLowerCase();
   const compactQuery = normalizedQuery.replace(/[^a-z0-9]/g, "");
-  const filtered = rows.filter((remittance) => {
+  const filtered = mergedRows.filter((remittance) => {
     const itemText = remittance.items.map((item) => `${item.uniqueCode} ${item.productCode} ${item.productName}`).join(" ");
     const haystack = `${remittance.remittanceNumber} ${remittance.clientName} ${itemText}`.toLowerCase();
     return !normalizedQuery || haystack.includes(normalizedQuery) || haystack.replace(/[^a-z0-9]/g, "").includes(compactQuery);
   });
-  const statusLabel = (status: string) => status.toLowerCase().includes("anul") ? "Anulado" : "Confirmado";
+  const showLoading = loading && mergedRows.length === 0;
+  const statusLabel = (status: string) => String(status ?? "").toLowerCase().includes("anul") ? "Anulado" : "Confirmado";
   const quantityLabel = (item: RemittanceItem) => item.weightKg != null
     ? `${Number(item.weightKg).toLocaleString("es-AR", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg netos`
     : `${item.units ?? 0} unidades`;
@@ -1751,7 +1795,7 @@ function Remittances() {
           <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar remito, cliente, producto o código" className="pl-9" />
         </div>
       </div>
-      {error && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">{error}</div>}
+      {error && mergedRows.length === 0 && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">{error}</div>}
       <div className="overflow-hidden rounded-2xl border">
         <Table>
           <TableHeader className="bg-[#fff4f8]">
@@ -1767,9 +1811,9 @@ function Remittances() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {loading && <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">Cargando remitos…</TableCell></TableRow>}
-            {!loading && filtered.length === 0 && <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">{query ? "No hay remitos que coincidan con la búsqueda." : "Todavía no hay remitos generados."}</TableCell></TableRow>}
-            {!loading && filtered.map((remittance) => (
+            {showLoading && <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">Cargando remitos…</TableCell></TableRow>}
+            {!showLoading && filtered.length === 0 && <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">{query ? "No hay remitos que coincidan con la búsqueda." : "Todavía no hay remitos generados."}</TableCell></TableRow>}
+            {!showLoading && filtered.map((remittance) => (
               <TableRow key={remittance.id}>
                 <TableCell className="font-mono font-bold">{remittance.remittanceNumber}</TableCell>
                 <TableCell>{new Date(remittance.createdAt).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" })}</TableCell>
@@ -2392,7 +2436,7 @@ export default function Home() {
           {view === "costos" && <Costs />}{" "}
           {view === "resultados" && <ProfitAndLoss />}{" "}
           {view === "nueva-compra" && <Costs initialPurchaseOpen />}{" "}
-          {view === "remitos" && <Remittances />}{" "}
+          {view === "remitos" && <Remittances productionRows={productionHistory} />}{" "}
           {view === "usuarios" && <StaffManagement staff={staff} setStaff={setStaff} />}{" "}
           {view === "reportes" && <Reports rows={productionHistory} />}
         </main>
