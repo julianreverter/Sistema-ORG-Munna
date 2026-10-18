@@ -207,6 +207,12 @@ function printProductionLabel(printWindow: Window | null = openProductionLabelWi
             visibility: visible !important;
             border-color: #000 !important;
           }
+          #print-production-label > div:not(:last-child) {
+            border-bottom: 0.6mm solid #000 !important;
+          }
+          #print-production-label > div:last-child {
+            border-top: 0 !important;
+          }
           #print-production-label {
             display: grid !important;
             grid-template-rows: 9mm 14mm 13mm 10mm 18mm !important;
