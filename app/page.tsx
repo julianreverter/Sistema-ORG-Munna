@@ -2294,9 +2294,24 @@ export default function Home() {
               availableUnits={productionRecords}
               onConfirm={async (codes, client) => {
                 const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "create-dispatch", codes, client }) });
-                const result = await response.json() as { error?: string };
+                const result = await response.json() as {
+                  error?: string;
+                  dispatch?: {
+                    remittanceNumber?: string;
+                    clientName?: string;
+                    createdAt?: string;
+                  };
+                };
                 if (!response.ok) throw new Error(result.error ?? "No se pudo confirmar el despacho.");
+                const dispatchedAt = result.dispatch?.createdAt ?? new Date().toISOString();
                 setProductionRecords((current) => current.filter((record) => !codes.includes(record.uniqueCode)));
+                setProductionHistory((current) => current.map((row) => codes.includes(row.uniqueCode) ? {
+                  ...row,
+                  status: "despachado",
+                  dispatchedAt,
+                  remittanceNumber: result.dispatch?.remittanceNumber ?? row.remittanceNumber,
+                  clientName: result.dispatch?.clientName || client.name,
+                } : row));
               }}
             />
           )}{" "}
