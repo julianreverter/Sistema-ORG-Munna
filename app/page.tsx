@@ -117,6 +117,40 @@ type ProductionRecord = {
 type ProductionHistoryRow = { id: number; uniqueCode: string; productCode: string; productName: string; presentation: string; container: string; weightKg: number | null; units: number | null; responsible: string; status: string; costPerKgSnapshot?: number | null; producedAt: string; dispatchedAt: string | null; remittanceNumber: string | null; clientName: string | null };
 type StaffMember = { id: number; email: string; displayName: string; role: "produccion" | "encargado" | "administracion"; active: boolean };
 
+const CODE39_PATTERNS: Record<string, string> = {
+  "0": "nnwwnwnnn", "1": "wnnwnnnnw", "2": "nnwwnnnnw", "3": "wnwwnnnnn",
+  "4": "nnnwwnnnw", "5": "wnnwwnnnn", "6": "nnwwwnnnn", "7": "nnnwnnwnw",
+  "8": "wnnwnnwnn", "9": "nnwwnnwnn", "*": "nwnnwnwnn",
+};
+
+function Code39Barcode({ value }: { value: string }) {
+  const encoded = `*${value.replace(/[^0-9]/g, "")}*`;
+  const bars: Array<{ x: number; width: number }> = [];
+  let x = 0;
+  for (const character of encoded) {
+    const pattern = CODE39_PATTERNS[character];
+    for (let index = 0; index < pattern.length; index += 1) {
+      const width = pattern[index] === "w" ? 3 : 1;
+      if (index % 2 === 0) bars.push({ x, width });
+      x += width;
+    }
+    x += 1;
+  }
+  return (
+    <svg
+      className="barcode-svg h-8 w-full"
+      viewBox={`0 0 ${x} 32`}
+      preserveAspectRatio="none"
+      role="img"
+      aria-label={`Código de barras ${value}`}
+    >
+      {bars.map((bar, index) => (
+        <rect key={index} x={bar.x} y="0" width={bar.width} height="32" fill="#000" />
+      ))}
+    </svg>
+  );
+}
+
 function openProductionLabelWindow() {
   const printWindow = window.open("", "munna-production-label", "popup,width=900,height=700");
   if (printWindow) {
@@ -172,11 +206,10 @@ function printProductionLabel(printWindow: Window | null = openProductionLabelWi
             padding-top: 1mm !important;
             z-index: 10 !important;
           }
-          #print-production-label .barcode {
+          #print-production-label .barcode-svg {
             display: block !important;
             width: 100% !important;
             height: 8mm !important;
-            background: repeating-linear-gradient(90deg,#171217 0 2px,transparent 2px 4px,#171217 4px 5px,transparent 5px 8px,#171217 8px 11px,transparent 11px 13px) !important;
           }
         </style>
       </head>
@@ -851,9 +884,9 @@ function Production({
             {selectedProduct?.name ?? "Seleccioná un producto"}
           </h3>
           <p className="text-sm font-bold">{selectedProduct?.container ?? "—"}</p>
-          <div className="my-2 border-y-2 border-black py-2 text-center">
+          <div className="my-1 border-y-2 border-black py-1 text-center">
             <p className="text-[10px] font-bold uppercase">{isWeightProduct ? "Peso neto" : "Contenido"}</p>
-            <p className="text-3xl font-black leading-none">
+            <p className="text-[26px] font-black leading-none">
               {isWeightProduct ? `${displayedWeight} kg` : `${quantity || "0"} unidades`}
             </p>
           </div>
@@ -888,7 +921,7 @@ function Production({
               <p><b>RNE:</b> pendiente · <b>RNPA:</b> pendiente</p>
             </div>
             <div>
-              <div className="barcode h-8 w-full" />
+              <Code39Barcode value={nextUniqueCode} />
               <p className="mt-0.5 text-center font-mono text-[9px] tracking-[.26em]">{nextUniqueCode}</p>
             </div>
           </div>
