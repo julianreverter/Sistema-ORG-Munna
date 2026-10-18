@@ -203,7 +203,10 @@ function printProductionLabel(printWindow: Window | null = openProductionLabelWi
             box-shadow: none !important;
             overflow: hidden !important;
           }
-          #print-production-label * { visibility: visible !important; }
+          #print-production-label * {
+            visibility: visible !important;
+            border-color: #000 !important;
+          }
           #print-production-label {
             display: grid !important;
             grid-template-rows: 9mm 14mm 13mm 10mm 18mm !important;
