@@ -1318,10 +1318,29 @@ function Dispatch({ clients, availableUnits, onConfirm }: { clients: Client[]; a
   );
 }
 
+type ProductProfile = Product & { packageWeightKg?: number; unitType?: "kg" | "unidad" };
+
 function Products() {
-  const [products, setProducts] = useState<Product[]>(productCatalog);
+  const [products, setProducts] = useState<ProductProfile[]>(productCatalog);
   const [query, setQuery] = useState("");
-  const [editing, setEditing] = useState<Product | null>(null);
+  const [editing, setEditing] = useState<ProductProfile | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+
+  useEffect(() => {
+    fetch("/api/operations")
+      .then(async (response) => {
+        const data = await response.json() as { productProfiles?: ProductProfile[]; error?: string };
+        if (!response.ok) throw new Error(data.error ?? "No se pudieron cargar los perfiles.");
+        const saved = data.productProfiles ?? [];
+        const byCode = new Map(saved.map((item) => [item.code, item]));
+        const merged = productCatalog.map((item) => ({ ...item, ...byCode.get(item.code) }));
+        const catalogCodes = new Set(productCatalog.map((item) => item.code));
+        setProducts([...merged, ...saved.filter((item) => !catalogCodes.has(item.code))]);
+      })
+      .catch((error) => setSaveError(error instanceof Error ? error.message : "No se pudieron cargar los perfiles."));
+  }, []);
+
   const rows = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     if (!normalized) return products;
@@ -1336,6 +1355,33 @@ function Products() {
     currency: "ARS",
     maximumFractionDigits: 0,
   });
+  const needsPackageWeight = (product: ProductProfile) =>
+    ["postre congelado", "pastelería"].includes(product.family.trim().toLocaleLowerCase("es-AR"));
+
+  const saveProductProfile = async () => {
+    if (!editing) return;
+    if (needsPackageWeight(editing) && Number(editing.packageWeightKg ?? 0) <= 0) {
+      setSaveError("Indicá cuántos kg netos trae la presentación para poder calcular su costo.");
+      return;
+    }
+    setSaving(true);
+    setSaveError("");
+    try {
+      const response = await fetch("/api/operations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "save-product-profile", product: editing }),
+      });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "No se pudo guardar el producto.");
+      setProducts((current) => current.map((item) => item.code === editing.code ? editing : item));
+      setEditing(null);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "No se pudo guardar el producto.");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <section className="rounded-[26px] border bg-white p-5 shadow-sm">
@@ -1348,155 +1394,56 @@ function Products() {
         </div>
         <div className="relative w-full md:w-96">
           <Search className="absolute left-3 top-3 size-4 text-muted-foreground" />
-          <Input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Buscar por nombre, código o familia"
-            className="h-10 rounded-xl pl-9"
-          />
+          <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por nombre, código o familia" className="h-10 rounded-xl pl-9" />
         </div>
       </div>
+      {saveError && !editing && <p className="mb-4 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{saveError}</p>}
       <div className="max-h-[650px] overflow-auto rounded-2xl border">
         <Table>
           <TableHeader className="sticky top-0 z-10 bg-[#fff4f8]">
             <TableRow>
-              <TableHead>Código</TableHead>
-              <TableHead>Producto</TableHead>
-              <TableHead>Familia</TableHead>
-              <TableHead>Presentación</TableHead>
-              <TableHead className="text-right">Precio base</TableHead>
-              <TableHead className="text-right">Acciones</TableHead>
+              <TableHead>Código</TableHead><TableHead>Producto</TableHead><TableHead>Familia</TableHead><TableHead>Presentación</TableHead><TableHead className="text-right">Kg presentación</TableHead><TableHead className="text-right">Precio base</TableHead><TableHead className="text-right">Acciones</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {rows.map((product) => (
-              <TableRow
-                key={product.code}
-                className="cursor-pointer"
-                onClick={() => setEditing({ ...product })}
-              >
+              <TableRow key={product.code} className="cursor-pointer" onClick={() => { setSaveError(""); setEditing({ ...product }); }}>
                 <TableCell className="font-mono font-bold">{product.code}</TableCell>
                 <TableCell className="font-bold">{product.name}</TableCell>
                 <TableCell>{product.family}</TableCell>
                 <TableCell>{product.presentation}</TableCell>
-                <TableCell className="text-right font-semibold">
-                  {currency.format(product.price)}
-                </TableCell>
-                <TableCell className="text-right">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="rounded-lg"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setEditing({ ...product });
-                    }}
-                  >
-                    Editar
-                  </Button>
-                </TableCell>
+                <TableCell className="text-right">{Number(product.packageWeightKg ?? 0) > 0 ? `${Number(product.packageWeightKg).toLocaleString("es-AR", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg` : "—"}</TableCell>
+                <TableCell className="text-right font-semibold">{currency.format(product.price)}</TableCell>
+                <TableCell className="text-right"><Button variant="outline" size="sm" className="rounded-lg" onClick={(event) => { event.stopPropagation(); setSaveError(""); setEditing({ ...product }); }}>Editar</Button></TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
       </div>
-      <p className="mt-3 text-xs text-muted-foreground">
-        Mostrando {rows.length} productos. Esta versión continúa siendo una maqueta con datos de prueba.
-      </p>
-      <Dialog open={Boolean(editing)} onOpenChange={(open) => !open && setEditing(null)}>
+      <p className="mt-3 text-xs text-muted-foreground">Mostrando {rows.length} productos. Los cambios quedan guardados para todo el equipo.</p>
+      <Dialog open={Boolean(editing)} onOpenChange={(open) => { if (!open) { setEditing(null); setSaveError(""); } }}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Editar producto</DialogTitle>
-            <DialogDescription>
-              Los cambios sirven para probar el circuito y se reinician al recargar la maqueta.
-            </DialogDescription>
-          </DialogHeader>
+          <DialogHeader><DialogTitle>Editar producto</DialogTitle><DialogDescription>Configurá la presentación y su peso para que el sistema pueda calcular el costo real.</DialogDescription></DialogHeader>
           {editing && (
             <div className="grid gap-4 py-2 sm:grid-cols-2">
-              <label className="space-y-2 text-sm font-bold">
-                Código
-                <Input value={editing.code} readOnly className="font-mono font-normal" />
-              </label>
-              <label className="space-y-2 text-sm font-bold">
-                Precio base
-                <Input
-                  type="number"
-                  value={editing.price}
-                  onChange={(event) => setEditing({ ...editing, price: Number(event.target.value) })}
-                  className="font-normal"
-                />
-              </label>
-              <label className="space-y-2 text-sm font-bold sm:col-span-2">
-                Nombre para sistema y etiqueta
-                <Input
-                  value={editing.name}
-                  onChange={(event) => setEditing({ ...editing, name: event.target.value })}
-                  className="font-normal"
-                />
-              </label>
-              <label className="space-y-2 text-sm font-bold">
-                Familia
-                <Input
-                  value={editing.family}
-                  onChange={(event) => setEditing({ ...editing, family: event.target.value })}
-                  className="font-normal"
-                />
-              </label>
-              <label className="space-y-2 text-sm font-bold">
-                Presentación
-                <Input
-                  value={editing.presentation}
-                  onChange={(event) => setEditing({ ...editing, presentation: event.target.value })}
-                  className="font-normal"
-                />
-              </label>
-              <label className="space-y-2 text-sm font-bold">
-                Envase
-                <Input
-                  value={editing.container}
-                  onChange={(event) => setEditing({ ...editing, container: event.target.value })}
-                  className="font-normal"
-                />
-              </label>
-              <label className="space-y-2 text-sm font-bold">
-                Vencimiento (días)
-                <Input
-                  type="number"
-                  value={editing.expiryDays}
-                  onChange={(event) => setEditing({ ...editing, expiryDays: Number(event.target.value) })}
-                  className="font-normal"
-                />
-              </label>
-              <label className="space-y-2 text-sm font-bold sm:col-span-2">
-                Ingredientes
-                <Textarea
-                  value={editing.ingredients}
-                  placeholder="Pendiente de completar"
-                  onChange={(event) => setEditing({ ...editing, ingredients: event.target.value })}
-                  className="min-h-24 font-normal"
-                />
-              </label>
+              <label className="space-y-2 text-sm font-bold">Código<Input value={editing.code} readOnly className="font-mono font-normal" /></label>
+              <label className="space-y-2 text-sm font-bold">Precio base<Input type="number" value={editing.price} onChange={(event) => setEditing({ ...editing, price: Number(event.target.value) })} className="font-normal" /></label>
+              <label className="space-y-2 text-sm font-bold sm:col-span-2">Nombre para sistema y etiqueta<Input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} className="font-normal" /></label>
+              <label className="space-y-2 text-sm font-bold">Familia<Input value={editing.family} onChange={(event) => setEditing({ ...editing, family: event.target.value })} className="font-normal" /></label>
+              <label className="space-y-2 text-sm font-bold">Presentación<Input value={editing.presentation} onChange={(event) => setEditing({ ...editing, presentation: event.target.value })} className="font-normal" /></label>
+              <label className="space-y-2 text-sm font-bold">Envase<Input value={editing.container} onChange={(event) => setEditing({ ...editing, container: event.target.value })} className="font-normal" /></label>
+              <label className="space-y-2 text-sm font-bold">Vencimiento (días)<Input type="number" value={editing.expiryDays} onChange={(event) => setEditing({ ...editing, expiryDays: Number(event.target.value) })} className="font-normal" /></label>
+              {editing.family !== "Helado" && <label className="space-y-2 text-sm font-bold sm:col-span-2">Peso neto de la presentación (kg)<Input value={editing.packageWeightKg ?? ""} onChange={(event) => setEditing({ ...editing, packageWeightKg: Number(event.target.value.replace(",", ".")) || 0 })} inputMode="decimal" placeholder="Ej. 7,120" className="font-normal" /><span className="block text-xs font-normal text-muted-foreground">Ejemplo: una caja de 20 alfajores que pesa 7,120 kg. La fórmula sigue expresada por 1 kg y el sistema multiplica ese costo por este peso.</span></label>}
+              <label className="space-y-2 text-sm font-bold sm:col-span-2">Ingredientes<Textarea value={editing.ingredients} placeholder="Pendiente de completar" onChange={(event) => setEditing({ ...editing, ingredients: event.target.value })} className="min-h-24 font-normal" /></label>
             </div>
           )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setEditing(null)}>Cancelar</Button>
-            <Button
-              className="bg-[#ed94b5] font-black text-[#3c2931] hover:bg-[#f2a8c3]"
-              onClick={() => {
-                if (!editing) return;
-                setProducts((current) => current.map((item) => item.code === editing.code ? editing : item));
-                setEditing(null);
-              }}
-            >
-              Guardar cambios
-            </Button>
-          </DialogFooter>
+          {saveError && editing && <p className="text-sm font-bold text-red-600">{saveError}</p>}
+          <DialogFooter><Button variant="outline" onClick={() => setEditing(null)}>Cancelar</Button><Button disabled={saving} className="bg-[#ed94b5] font-black text-[#3c2931] hover:bg-[#f2a8c3]" onClick={saveProductProfile}>{saving ? "Guardando…" : "Guardar cambios"}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
     </section>
   );
 }
-
 type Client = {
   id: number;
   name: string;
@@ -2324,6 +2271,8 @@ type FormulaRecord = {
   ingredients: number;
   recipe: number;
   perKg: number;
+  packageWeightKg?: number;
+  presentationCost?: number | null;
   updated: string;
   items: FormulaItemRecord[];
 };
@@ -2381,10 +2330,11 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
   const [supplier, setSupplier] = useState({ name: "", taxMode: "con_iva", category: "Materia prima" });
   const [selectedSupplierName, setSelectedSupplierName] = useState("");
   const [formulas, setFormulas] = useState<FormulaRecord[]>([]);
+  const [productProfiles, setProductProfiles] = useState<ProductProfile[]>([]);
   const [formulaOpen, setFormulaOpen] = useState(false);
   const [savingFormula, setSavingFormula] = useState(false);
   const [formulaError, setFormulaError] = useState("");
-  const [formula, setFormula] = useState<FormulaDraft>({ id: null, productCode: "", name: "", yieldKg: "60", items: [{ materialId: "", quantityKg: "" }] });
+  const [formula, setFormula] = useState<FormulaDraft>({ id: null, productCode: "", name: "", yieldKg: "1", items: [{ materialId: "", quantityKg: "" }] });
   const [purchase, setPurchase] = useState({ supplier: "", invoice: "", invoiceDate: today, center: "Fábrica", payment: "Cuenta corriente" });
   const [payment, setPayment] = useState({ supplier: "", paymentDate: today, amount: "", method: "Transferencia", reference: "", note: "" });
   const [expense, setExpense] = useState({ expenseDate: today, area: "Fábrica", category: "Servicios", concept: "", amount: "", notes: "" });
@@ -2425,7 +2375,15 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
     const materialRow = materials.find((row) => String(row.id) === item.materialId);
     return sum + (Number(item.quantityKg.replace(",", ".")) || 0) * Number(materialRow?.cost ?? 0);
   }, 0);
-  const formulaYield = Number(formula.yieldKg.replace(",", ".")) || 0;
+  const formulaQuantityTotal = formula.items.reduce((sum, item) => sum + (Number(item.quantityKg.replace(",", ".")) || 0), 0);
+  const formulaTotalInTenThousandths = Math.round(formulaQuantityTotal * 10000);
+  const formulaIsExact = formulaTotalInTenThousandths === 10000;
+  const formulaDifference = 1 - formulaQuantityTotal;
+  const selectedFormulaProfile = productProfiles.find((item) => item.code === formula.productCode);
+  const selectedFormulaCatalogProduct = productCatalog.find((item) => item.code === formula.productCode);
+  const formulaPresentationCost = Number(selectedFormulaProfile?.packageWeightKg ?? 0) > 0
+    ? formulaCost * Number(selectedFormulaProfile?.packageWeightKg)
+    : null;
   const filteredPurchases = purchases.filter((row) => {
     const query = purchaseQuery.trim().toLowerCase();
     return !query || row.invoice.toLowerCase().includes(query) || row.supplier.toLowerCase().includes(query);
@@ -2440,6 +2398,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
       supplierPayments?: SupplierPaymentRow[];
       suppliers?: SupplierCostProfile[];
       formulas?: FormulaRecord[];
+      productProfiles?: ProductProfile[];
       error?: string;
     };
     if (!response.ok) throw new Error(data.error ?? "No se pudieron cargar los datos de costos.");
@@ -2451,6 +2410,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
     setPayments(data.supplierPayments ?? []);
     setSuppliers(loadedSuppliers);
     setFormulas(data.formulas ?? []);
+    setProductProfiles(data.productProfiles ?? []);
     setSelectedSupplierName((current) => current && loadedSuppliers.some((item) => item.name === current) ? current : loadedSuppliers[0]?.name ?? "");
     setPurchase((current) => ({ ...current, supplier: current.supplier && loadedSuppliers.some((item) => item.name === current.supplier) ? current.supplier : loadedSuppliers[0]?.name ?? "" }));
     setPayment((current) => ({ ...current, supplier: current.supplier && loadedSuppliers.some((item) => item.name === current.supplier) ? current.supplier : loadedSuppliers[0]?.name ?? "" }));
@@ -2573,7 +2533,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
         id: record.id,
         productCode: record.productCode,
         name: record.name,
-        yieldKg: String(record.yieldKg).replace(".", ","),
+        yieldKg: "1",
         items: record.items.map((item) => ({ materialId: String(item.materialId), quantityKg: String(item.quantityKg).replace(".", ",") })),
       });
     } else {
@@ -2582,7 +2542,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
         id: null,
         productCode: firstProduct?.code ?? "",
         name: firstProduct?.name ?? "",
-        yieldKg: "60",
+        yieldKg: "1",
         items: [{ materialId: materials[0]?.id ? String(materials[0].id) : "", quantityKg: "" }],
       });
     }
@@ -2590,22 +2550,26 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
   };
 
   const saveFormula = async () => {
-    const yieldKg = Number(formula.yieldKg.replace(",", "."));
     const items = formula.items.map((item) => ({ materialId: Number(item.materialId), quantityKg: Number(item.quantityKg.replace(",", ".")) }));
     const selectedProduct = productCatalog.find((item) => item.code === formula.productCode);
-    if (!selectedProduct || !formula.name.trim() || yieldKg <= 0 || items.length === 0 || items.some((item) => !item.materialId || item.quantityKg <= 0)) {
-      setFormulaError("Elegí el producto terminado, indicá el rendimiento y completá todas las materias primas.");
+    const totalQuantityKg = items.reduce((sum, item) => sum + item.quantityKg, 0);
+    if (!selectedProduct || !formula.name.trim() || items.length === 0 || items.some((item) => !item.materialId || item.quantityKg <= 0)) {
+      setFormulaError("Elegí el producto terminado y completá todas las materias primas.");
       return;
     }
     if (new Set(items.map((item) => item.materialId)).size !== items.length) {
       setFormulaError("No repitas la misma materia prima dentro de una fórmula.");
       return;
     }
+    if (Math.round(totalQuantityKg * 10000) !== 10000) {
+      setFormulaError(`La fórmula debe sumar exactamente 1,0000 kg. Actualmente suma ${totalQuantityKg.toLocaleString("es-AR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} kg.`);
+      return;
+    }
     setSavingFormula(true); setFormulaError("");
     try {
       const response = await fetch("/api/operations", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "save-recipe", recipe: { id: formula.id, productCode: formula.productCode, product: selectedProduct, name: formula.name, yieldKg, items } }),
+        body: JSON.stringify({ action: "save-recipe", recipe: { id: formula.id, productCode: formula.productCode, product: selectedProduct, name: formula.name, yieldKg: 1, items } }),
       });
       const data = await response.json() as { error?: string };
       if (!response.ok) throw new Error(data.error ?? "No se pudo guardar la fórmula.");
@@ -2653,11 +2617,11 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
 
       {tab === "materias" && <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="flex flex-col gap-3 border-b p-5 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xl font-black">Materias primas</h3><p className="text-sm text-muted-foreground">Catálogo general independiente de los proveedores. El costo se actualiza con la última compra.</p></div><Button onClick={() => { setMaterialError(""); setMaterialOpen(true); }} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Nueva materia prima</Button></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Materia prima</TableHead><TableHead>Unidad de costo</TableHead><TableHead>Contenido por envase</TableHead><TableHead>IVA</TableHead><TableHead>Última compra</TableHead><TableHead className="text-right">Último costo unitario</TableHead><TableHead className="text-right">Variación</TableHead></TableRow></TableHeader><TableBody>{materials.length === 0 && <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">Todavía no hay materias primas cargadas.</TableCell></TableRow>}{materials.map(row => { const variation = row.previous > 0 && row.cost > 0 ? (row.cost / row.previous - 1) * 100 : null; return <TableRow key={row.id ?? row.name}><TableCell className="font-bold">{row.name}</TableCell><TableCell>{row.unit === "unidad" ? "Unidad" : "Kilogramo"}</TableCell><TableCell>{row.pack}</TableCell><TableCell><Badge variant="outline">{String(row.vat).replace(".", ",")}%</Badge></TableCell><TableCell>{row.date}</TableCell><TableCell className="text-right font-black">{row.cost > 0 ? money(row.cost) : "Sin compras"}</TableCell><TableCell className="text-right">{variation == null ? <Badge variant="outline">Sin historial</Badge> : <Badge className={variation > 0 ? "bg-rose-100 text-rose-700" : variation < 0 ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-700"}>{variation > 0 ? "+" : ""}{variation.toFixed(1)}%</Badge>}</TableCell></TableRow>})}</TableBody></Table></div></div>}
 
-      {tab === "formulas" && <div className="space-y-4"><div className="rounded-3xl border bg-white p-6 shadow-sm"><div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xl font-black">Fórmulas de productos</h3><p className="text-sm text-muted-foreground">Asigná las materias primas y la cantidad usada en cada elaboración. El costo se recalcula con la última compra.</p></div><Button onClick={() => openFormula()} disabled={materials.filter((item)=>item.id != null).length === 0} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Nueva fórmula</Button></div>{materials.filter((item)=>item.id != null).length === 0 && <p className="mt-4 rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-800">Primero cargá al menos una materia prima para poder crear fórmulas.</p>}</div>{formulas.length === 0 && <div className="rounded-3xl border border-dashed bg-white p-10 text-center text-muted-foreground">Todavía no hay fórmulas cargadas.</div>}<div className="grid gap-4 lg:grid-cols-2">{formulas.map(row => <div key={row.id} className="rounded-3xl border bg-white p-6 shadow-sm"><div className="flex items-start justify-between"><div><Badge variant="outline">Receta · {row.batch}</Badge><h3 className="mt-3 text-xl font-black">{row.name}</h3><p className="mt-1 text-sm text-muted-foreground">{row.productCode} · {row.ingredients} ingredientes · actualizado {row.updated}</p></div><FlaskConical className="size-7 text-[#b74e76]"/></div><div className="mt-6 grid grid-cols-2 gap-3"><div className="rounded-2xl bg-[#fff3f7] p-4"><p className="text-xs font-semibold text-muted-foreground">Costo receta</p><p className="mt-1 text-lg font-black">{money(row.recipe)}</p></div><div className="rounded-2xl bg-[#f5f3f4] p-4"><p className="text-xs font-semibold text-muted-foreground">Costo por kg</p><p className="mt-1 text-lg font-black">{money(row.perKg)}</p></div></div><Button onClick={() => openFormula(row)} variant="ghost" className="mt-4 w-full justify-between">Abrir fórmula <ChevronRight className="size-4"/></Button></div>)}</div></div>}
+      {tab === "formulas" && <div className="space-y-4"><div className="rounded-3xl border bg-white p-6 shadow-sm"><div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xl font-black">Fórmulas de productos</h3><p className="text-sm text-muted-foreground">Cada fórmula representa exactamente 1 kg. El costo se recalcula con la última compra de cada materia prima.</p></div><Button onClick={() => openFormula()} disabled={materials.filter((item)=>item.id != null).length === 0} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Nueva fórmula</Button></div>{materials.filter((item)=>item.id != null).length === 0 && <p className="mt-4 rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-800">Primero cargá al menos una materia prima para poder crear fórmulas.</p>}</div>{formulas.length === 0 && <div className="rounded-3xl border border-dashed bg-white p-10 text-center text-muted-foreground">Todavía no hay fórmulas cargadas.</div>}<div className="grid gap-4 lg:grid-cols-2">{formulas.map(row => <div key={row.id} className="rounded-3xl border bg-white p-6 shadow-sm"><div className="flex items-start justify-between"><div><Badge variant="outline">Fórmula base · {row.batch}</Badge><h3 className="mt-3 text-xl font-black">{row.name}</h3><p className="mt-1 text-sm text-muted-foreground">{row.productCode} · {row.ingredients} ingredientes · actualizado {row.updated}</p></div><FlaskConical className="size-7 text-[#b74e76]"/></div><div className={`mt-6 grid gap-3 ${Number(row.packageWeightKg ?? 0) > 0 ? "sm:grid-cols-3" : "grid-cols-2"}`}><div className="rounded-2xl bg-[#fff3f7] p-4"><p className="text-xs font-semibold text-muted-foreground">Costo fórmula 1 kg</p><p className="mt-1 text-lg font-black">{money(row.recipe)}</p></div><div className="rounded-2xl bg-[#f5f3f4] p-4"><p className="text-xs font-semibold text-muted-foreground">Costo por kg</p><p className="mt-1 text-lg font-black">{money(row.perKg)}</p></div>{Number(row.packageWeightKg ?? 0) > 0 && <div className="rounded-2xl bg-emerald-50 p-4"><p className="text-xs font-semibold text-emerald-700">Costo presentación</p><p className="mt-1 text-lg font-black text-emerald-900">{money(Number(row.presentationCost ?? 0))}</p><p className="text-xs text-emerald-700">{Number(row.packageWeightKg).toLocaleString("es-AR", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg</p></div>}</div><Button onClick={() => openFormula(row)} variant="ghost" className="mt-4 w-full justify-between">Abrir fórmula <ChevronRight className="size-4"/></Button></div>)}</div></div>}
 
       <Dialog open={supplierOpen} onOpenChange={setSupplierOpen}><DialogContent className="sm:max-w-[620px]"><DialogHeader><DialogTitle>Nuevo proveedor</DialogTitle><DialogDescription>El proveedor quedará disponible para materias primas, facturas, pagos y cuenta corriente.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold sm:col-span-2">Nombre o razón social<Input value={supplier.name} onChange={(e)=>setSupplier({...supplier,name:e.target.value})} placeholder="Ej. Vacalin"/></label><label className="space-y-2 text-sm font-bold">Condición de IVA<select value={supplier.taxMode} onChange={(e)=>setSupplier({...supplier,taxMode:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option value="con_iva">Con IVA</option><option value="sin_iva">Sin IVA</option><option value="revisar">Revisar</option></select></label><label className="space-y-2 text-sm font-bold">Categoría<Input value={supplier.category} onChange={(e)=>setSupplier({...supplier,category:e.target.value})} placeholder="Ej. Materia prima"/></label></div>{supplierError && <p className="text-sm font-bold text-red-600">{supplierError}</p>}<DialogFooter><Button variant="outline" onClick={()=>setSupplierOpen(false)}>Cancelar</Button><Button disabled={savingSupplier} onClick={saveSupplier} className="bg-[#3b2931] text-white">{savingSupplier ? "Guardando…" : "Guardar proveedor"}</Button></DialogFooter></DialogContent></Dialog>
 
-      <Dialog open={formulaOpen} onOpenChange={setFormulaOpen}><DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-[820px]"><DialogHeader><DialogTitle>{formula.id ? "Editar fórmula" : "Nueva fórmula"}</DialogTitle><DialogDescription>Seleccioná el producto elaborado y detallá cuánto lleva de cada materia prima por receta.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-3"><label className="space-y-2 text-sm font-bold sm:col-span-3">Producto del maestro<Combobox items={productionProducts} value={formula.productCode ? productionProducts.find((item) => item.startsWith(`${formula.productCode} · `)) ?? "" : ""} onValueChange={(value) => { if (!value) { setFormula({...formula,productCode:"",name:""}); return; } const selectedProduct = productCatalog.find((item) => `${item.code} · ${item.name}` === value); if (selectedProduct) setFormula({...formula,productCode:selectedProduct.code,name:selectedProduct.name}); }}><ComboboxInput placeholder="Escribí el nombre o código del producto…" className="h-11 w-full rounded-xl bg-white font-normal"/><ComboboxContent><ComboboxEmpty>No encontramos ese producto en el maestro.</ComboboxEmpty><ComboboxList>{(item) => <ComboboxItem key={item} value={item}>{item}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox><span className="block text-xs font-normal text-muted-foreground">La fórmula quedará vinculada a este producto y no se podrá escribir un nombre distinto.</span></label><label className="space-y-2 text-sm font-bold">Rendimiento total de la receta<Input value={formula.yieldKg} onChange={(e)=>setFormula({...formula,yieldKg:e.target.value})} inputMode="decimal" placeholder="60"/><span className="block text-xs font-normal text-muted-foreground">Kilogramos finales elaborados.</span></label><div className="rounded-2xl bg-[#fff3f7] p-4 sm:col-span-2"><p className="text-xs font-bold uppercase text-muted-foreground">Costo calculado</p><div className="mt-2 flex flex-wrap gap-6"><div><b className="text-lg">{money(formulaCost)}</b><p className="text-xs text-muted-foreground">Receta completa</p></div><div><b className="text-lg">{money(formulaYield > 0 ? formulaCost / formulaYield : 0)}</b><p className="text-xs text-muted-foreground">Por kg elaborado</p></div></div></div></div><div className="space-y-3"><div className="flex items-center justify-between"><h4 className="font-black">Materias primas de la fórmula</h4><Button type="button" variant="outline" size="sm" onClick={()=>setFormula({...formula,items:[...formula.items,{materialId:materials[0]?.id ? String(materials[0].id) : "",quantityKg:""}]})}><Plus /> Agregar ingrediente</Button></div>{formula.items.map((item,index)=>{ const selectedMaterial=materials.find(row=>String(row.id)===item.materialId); const quantity=Number(item.quantityKg.replace(",","."))||0; return <div key={index} className="grid gap-3 rounded-2xl border bg-white p-4 sm:grid-cols-[2fr_1fr_1fr_auto]"><label className="space-y-1 text-xs font-bold">Materia prima<select value={item.materialId} onChange={(e)=>setFormula({...formula,items:formula.items.map((row,i)=>i===index?{...row,materialId:e.target.value}:row)})} className="h-10 w-full rounded-md border bg-white px-3 text-sm font-normal"><option value="">Seleccionar…</option>{materials.filter(row=>row.id != null).map(row=><option key={row.id} value={String(row.id)}>{row.name}</option>)}</select></label><label className="space-y-1 text-xs font-bold">Cantidad usada<Input value={item.quantityKg} onChange={(e)=>setFormula({...formula,items:formula.items.map((row,i)=>i===index?{...row,quantityKg:e.target.value}:row)})} inputMode="decimal" placeholder="0,000"/><span className="block font-normal text-muted-foreground">{selectedMaterial?.unit ?? "kg o unidades"}</span></label><div className="self-end rounded-xl bg-[#f7f3f5] px-3 py-2 text-right"><p className="text-xs text-muted-foreground">Costo</p><b>{money(quantity * Number(selectedMaterial?.cost ?? 0))}</b></div><Button type="button" variant="ghost" className="self-end text-muted-foreground" disabled={formula.items.length===1} onClick={()=>setFormula({...formula,items:formula.items.filter((_,i)=>i!==index)})}>Quitar</Button></div>})}</div>{formulaError && <p className="text-sm font-bold text-red-600">{formulaError}</p>}<DialogFooter><Button variant="outline" onClick={()=>setFormulaOpen(false)}>Cancelar</Button><Button disabled={savingFormula} onClick={saveFormula} className="bg-[#3b2931] text-white">{savingFormula ? "Guardando…" : "Guardar fórmula"}</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={formulaOpen} onOpenChange={setFormulaOpen}><DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-[820px]"><DialogHeader><DialogTitle>{formula.id ? "Editar fórmula" : "Nueva fórmula"}</DialogTitle><DialogDescription>Completá la composición de 1 kg exacto del producto. Si el total es menor o mayor, el sistema no permitirá guardarla.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-3"><label className="space-y-2 text-sm font-bold sm:col-span-3">Producto del maestro<Combobox items={productionProducts} value={formula.productCode ? productionProducts.find((item) => item.startsWith(`${formula.productCode} · `)) ?? "" : ""} onValueChange={(value) => { if (!value) { setFormula({...formula,productCode:"",name:""}); return; } const selectedProduct = productCatalog.find((item) => `${item.code} · ${item.name}` === value); if (selectedProduct) setFormula({...formula,productCode:selectedProduct.code,name:selectedProduct.name}); }}><ComboboxInput placeholder="Escribí el nombre o código del producto…" className="h-11 w-full rounded-xl bg-white font-normal"/><ComboboxContent><ComboboxEmpty>No encontramos ese producto en el maestro.</ComboboxEmpty><ComboboxList>{(item) => <ComboboxItem key={item} value={item}>{item}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox><span className="block text-xs font-normal text-muted-foreground">La fórmula queda vinculada a este producto del maestro.</span></label><div className={`rounded-2xl border-2 p-4 ${formulaIsExact ? "border-emerald-500 bg-emerald-50" : "border-amber-400 bg-amber-50"}`}><p className="text-xs font-bold uppercase text-muted-foreground">Total de ingredientes</p><p className="mt-1 text-2xl font-black">{formulaQuantityTotal.toLocaleString("es-AR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} / 1,0000 kg</p><p className={`mt-1 text-xs font-bold ${formulaIsExact ? "text-emerald-700" : "text-amber-800"}`}>{formulaIsExact ? "Exacto: ya se puede guardar" : formulaDifference > 0 ? `Faltan ${formulaDifference.toLocaleString("es-AR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} kg` : `Sobran ${Math.abs(formulaDifference).toLocaleString("es-AR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} kg`}</p></div><div className="rounded-2xl bg-[#fff3f7] p-4 sm:col-span-2"><p className="text-xs font-bold uppercase text-muted-foreground">Costo calculado</p><div className="mt-2 flex flex-wrap gap-6"><div><b className="text-lg">{money(formulaCost)}</b><p className="text-xs text-muted-foreground">Por 1 kg elaborado</p></div>{formulaPresentationCost != null && <div><b className="text-lg">{money(formulaPresentationCost)}</b><p className="text-xs text-muted-foreground">Presentación de {Number(selectedFormulaProfile?.packageWeightKg).toLocaleString("es-AR", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg</p></div>}</div></div></div>{selectedFormulaCatalogProduct && selectedFormulaCatalogProduct.family !== "Helado" && Number(selectedFormulaProfile?.packageWeightKg ?? 0) <= 0 && <p className="rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-800">Para calcular el costo de la presentación, completá su peso neto en Maestro de productos.</p>}<div className="space-y-3"><div className="flex items-center justify-between"><h4 className="font-black">Materias primas para 1 kg</h4><Button type="button" variant="outline" size="sm" onClick={()=>setFormula({...formula,items:[...formula.items,{materialId:materials[0]?.id ? String(materials[0].id) : "",quantityKg:""}]})}><Plus /> Agregar ingrediente</Button></div>{formula.items.map((item,index)=>{ const selectedMaterial=materials.find(row=>String(row.id)===item.materialId); const quantity=Number(item.quantityKg.replace(",","."))||0; return <div key={index} className="grid gap-3 rounded-2xl border bg-white p-4 sm:grid-cols-[2fr_1fr_1fr_auto]"><label className="space-y-1 text-xs font-bold">Materia prima<select value={item.materialId} onChange={(e)=>setFormula({...formula,items:formula.items.map((row,i)=>i===index?{...row,materialId:e.target.value}:row)})} className="h-10 w-full rounded-md border bg-white px-3 text-sm font-normal"><option value="">Seleccionar…</option>{materials.filter(row=>row.id != null).map(row=><option key={row.id} value={String(row.id)}>{row.name}</option>)}</select></label><label className="space-y-1 text-xs font-bold">Cantidad en kg<Input value={item.quantityKg} onChange={(e)=>setFormula({...formula,items:formula.items.map((row,i)=>i===index?{...row,quantityKg:e.target.value}:row)})} inputMode="decimal" placeholder="0,0000"/><span className="block font-normal text-muted-foreground">kg dentro de 1 kg final</span></label><div className="self-end rounded-xl bg-[#f7f3f5] px-3 py-2 text-right"><p className="text-xs text-muted-foreground">Costo</p><b>{money(quantity * Number(selectedMaterial?.cost ?? 0))}</b></div><Button type="button" variant="ghost" className="self-end text-muted-foreground" disabled={formula.items.length===1} onClick={()=>setFormula({...formula,items:formula.items.filter((_,i)=>i!==index)})}>Quitar</Button></div>})}</div>{formulaError && <p className="text-sm font-bold text-red-600">{formulaError}</p>}<DialogFooter><Button variant="outline" onClick={()=>setFormulaOpen(false)}>Cancelar</Button><Button disabled={savingFormula || !formulaIsExact} onClick={saveFormula} className="bg-[#3b2931] text-white">{savingFormula ? "Guardando…" : "Guardar fórmula"}</Button></DialogFooter></DialogContent></Dialog>
 
       <Dialog open={materialOpen} onOpenChange={setMaterialOpen}><DialogContent className="sm:max-w-[620px]"><DialogHeader><DialogTitle>Nueva materia prima</DialogTitle><DialogDescription>Creala una sola vez en el catálogo general. Después podrá comprarse a cualquier proveedor y utilizarse en las fórmulas.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold sm:col-span-2">Nombre de la materia prima<Input value={material.name} onChange={(e)=>setMaterial({...material,name:e.target.value})} placeholder="Ej. Pasta de pistacho"/></label><label className="space-y-2 text-sm font-bold">Unidad de costo<select value={material.unit} onChange={(e)=>setMaterial({...material,unit:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option value="kg">Kilogramo</option><option value="unidad">Unidad</option></select></label><label className="space-y-2 text-sm font-bold">Contenido por envase<Input value={material.contentPerPackage} onChange={(e)=>setMaterial({...material,contentPerPackage:e.target.value})} inputMode="decimal" placeholder="Ej. 10"/><span className="block text-xs font-normal text-muted-foreground">Cuántos kg o unidades trae cada bolsa, caja o balde.</span></label><label className="space-y-2 text-sm font-bold sm:col-span-2">IVA habitual<select value={material.vat} onChange={(e)=>setMaterial({...material,vat:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option value="21">21%</option><option value="10.5">10,5%</option><option value="0">0%</option></select></label></div>{materialError && <p className="text-sm font-bold text-red-600">{materialError}</p>}<DialogFooter><Button variant="outline" onClick={()=>setMaterialOpen(false)}>Cancelar</Button><Button disabled={savingMaterial} onClick={saveMaterial} className="bg-[#3b2931] text-white">{savingMaterial ? "Guardando…" : "Guardar materia prima"}</Button></DialogFooter></DialogContent></Dialog>
 
