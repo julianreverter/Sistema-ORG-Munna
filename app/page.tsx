@@ -2218,6 +2218,28 @@ function ProfitAndLoss() {
 }
 
 type CostTab = "resumen" | "compras" | "gastos" | "iva" | "pagos" | "proveedores" | "materias" | "formulas";
+type InvoicePriceMode = "included" | "excluded" | "black";
+type InvoiceLineDraft = { product: string; quantity: string; price: string; priceMode: InvoicePriceMode };
+
+const parseInvoiceAmount = (value: string) => {
+  const cleaned = String(value ?? "").replace(/[^0-9,.-]/g, "");
+  if (!cleaned) return 0;
+  if (cleaned.includes(",")) return Number(cleaned.replaceAll(".", "").replace(",", ".")) || 0;
+  const dots = cleaned.match(/\./g)?.length ?? 0;
+  if (dots === 1 && /\.\d{1,2}$/.test(cleaned)) return Number(cleaned) || 0;
+  return Number(cleaned.replaceAll(".", "")) || 0;
+};
+const defaultInvoicePriceMode = (supplierTaxMode: string): InvoicePriceMode => supplierTaxMode === "Con IVA" ? "excluded" : "black";
+const calculateInvoiceLine = (line: InvoiceLineDraft, vatRate: number) => {
+  const quantity = Number(line.quantity.replace(",", ".")) || 0;
+  const enteredUnitPrice = parseInvoiceAmount(line.price);
+  const effectiveRate = line.priceMode === "black" ? 0 : Math.max(0, vatRate || 0);
+  const unitNet = line.priceMode === "included" && effectiveRate > 0 ? enteredUnitPrice / (1 + effectiveRate / 100) : enteredUnitPrice;
+  const unitGross = line.priceMode === "excluded" ? enteredUnitPrice * (1 + effectiveRate / 100) : enteredUnitPrice;
+  const net = quantity * unitNet;
+  const gross = quantity * unitGross;
+  return { net, vat: gross - net, gross, vatRate: effectiveRate };
+};
 
 const costCenters = [
   { name: "Fábrica", amount: 18432540, tone: "bg-[#3b2931]" },
@@ -2359,6 +2381,7 @@ const flavorCosts = [
 ];
 
 const money = (value: number) => new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 }).format(value);
+const invoiceMoney = (value: number) => new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
 
 function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean }) {
   const today = new Date().toISOString().slice(0, 10);
@@ -2403,7 +2426,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
   const [purchase, setPurchase] = useState({ supplier: "", invoice: "", invoiceDate: today, center: "Fábrica", payment: "Cuenta corriente" });
   const [payment, setPayment] = useState({ supplier: "", paymentDate: today, amount: "", method: "Transferencia", reference: "", note: "" });
   const [expense, setExpense] = useState({ expenseDate: today, area: "Fábrica", category: "Servicios", concept: "", amount: "", notes: "" });
-  const [invoiceLines, setInvoiceLines] = useState([{ product: "", quantity: "1", price: "" }]);
+  const [invoiceLines, setInvoiceLines] = useState<InvoiceLineDraft[]>([{ product: "", quantity: "1", price: "", priceMode: "excluded" }]);
   const tabs: [CostTab, string, typeof Calculator][] = [
     ["resumen", "Resumen", LayoutDashboard], ["compras", "Facturas", PackagePlus], ["gastos", "Gastos generales", Calculator], ["iva", "IVA fiscal", FileText], ["pagos", "Pagos", WalletCards],
     ["proveedores", "Proveedores", WalletCards], ["materias", "Materias primas", Boxes],
@@ -2411,14 +2434,15 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
   ];
   const total = costCenters.reduce((sum, item) => sum + item.amount, 0);
   const activeSupplier = suppliers.find((item) => item.name === purchase.supplier) ?? { id: 0, name: purchase.supplier, taxMode: "Revisar", category: "", debt: 0, invoices: "0 facturas", date: "Sin compras" };
-  const invoiceNet = invoiceLines.reduce((sum, line) => sum + (Number(line.quantity.replace(",", ".")) || 0) * (Number(line.price.replace(/\D/g, "")) || 0), 0);
-  const invoiceTax = activeSupplier.taxMode === "Con IVA" ? invoiceLines.reduce((sum, line) => {
+  const calculatedInvoiceLines = invoiceLines.map((line) => {
     const product = materials.find((item) => item.name === line.product);
-    const subtotal = (Number(line.quantity.replace(",", ".")) || 0) * (Number(line.price.replace(/\D/g, "")) || 0);
-    return sum + subtotal * ((product?.vat ?? 21) / 100);
-  }, 0) : 0;
-  const invoiceVat21 = activeSupplier.taxMode === "Con IVA" ? invoiceLines.reduce((sum, line) => { const product = materials.find((item) => item.name === line.product); const subtotal = (Number(line.quantity.replace(",", ".")) || 0) * (Number(line.price.replace(/\D/g, "")) || 0); return sum + (product?.vat === 21 ? subtotal * .21 : 0); }, 0) : 0;
-  const invoiceVat105 = activeSupplier.taxMode === "Con IVA" ? invoiceLines.reduce((sum, line) => { const product = materials.find((item) => item.name === line.product); const subtotal = (Number(line.quantity.replace(",", ".")) || 0) * (Number(line.price.replace(/\D/g, "")) || 0); return sum + (product?.vat === 10.5 ? subtotal * .105 : 0); }, 0) : 0;
+    return calculateInvoiceLine(line, Number(product?.vat ?? 21));
+  });
+  const invoiceNet = calculatedInvoiceLines.reduce((sum, line) => sum + line.net, 0);
+  const invoiceTax = calculatedInvoiceLines.reduce((sum, line) => sum + line.vat, 0);
+  const invoiceGross = calculatedInvoiceLines.reduce((sum, line) => sum + line.gross, 0);
+  const invoiceVat21 = calculatedInvoiceLines.filter((line) => line.vatRate === 21).reduce((sum, line) => sum + line.vat, 0);
+  const invoiceVat105 = calculatedInvoiceLines.filter((line) => line.vatRate === 10.5).reduce((sum, line) => sum + line.vat, 0);
   const monthlyVat21 = purchases.reduce((sum, row) => sum + row.vat21, 0);
   const monthlyVat105 = purchases.reduce((sum, row) => sum + row.vat105, 0);
   const expenseCategories = ["Servicios", "Alquileres", "Sueldos", "Mantenimiento", "Inversiones", "Otros"];
@@ -2657,7 +2681,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
   };
 
   const savePurchase = async () => {
-    if (!purchase.supplier || !purchase.invoice.trim() || !invoiceNet || invoiceLines.some((line) => !line.product)) {
+    if (!purchase.supplier || !purchase.invoice.trim() || !invoiceGross || invoiceLines.some((line) => !line.product || !parseInvoiceAmount(line.price))) {
       setPurchaseError("Completá proveedor, número de factura, productos y precios.");
       return;
     }
@@ -2670,14 +2694,14 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
           if (!profile) throw new Error("Una materia prima seleccionada ya no está disponible.");
           return { ...line, vatRate: profile.vat, contentPerPackage: profile.contentPerPackage ?? Number(profile.pack.match(/[\d,.]+/)?.[0].replace(",", ".") ?? 1), costUnit: profile.unit };
         }),
-        totals: { net: invoiceNet, vat: invoiceTax, gross: invoiceNet + invoiceTax },
+        totals: { net: invoiceNet, vat: invoiceTax, gross: invoiceGross },
       }) });
       const result = await response.json() as { error?: string };
       if (!response.ok) throw new Error(result.error ?? "No se pudo guardar la compra.");
       await loadCostData();
       setPurchaseOpen(false);
       setPurchase((current) => ({ supplier: current.supplier, invoice: "", invoiceDate: today, center: "Fábrica", payment: "Cuenta corriente" }));
-      setInvoiceLines([{ product: "", quantity: "1", price: "" }]);
+      setInvoiceLines([{ product: "", quantity: "1", price: "", priceMode: defaultInvoicePriceMode(activeSupplier.taxMode) }]);
     } catch (error) {
       setPurchaseError(error instanceof Error ? error.message : "No se pudo guardar la compra.");
     } finally { setSavingPurchase(false); }
@@ -2834,18 +2858,18 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
 
       <Dialog open={paymentOpen} onOpenChange={setPaymentOpen}><DialogContent className="sm:max-w-[620px]"><DialogHeader><DialogTitle>Registrar pago a proveedor</DialogTitle><DialogDescription>El importe se descuenta de la cuenta corriente del proveedor.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold">Proveedor<select value={payment.supplier} onChange={e=>setPayment({...payment,supplier:e.target.value})} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal">{suppliers.map(item=><option key={item.name}>{item.name}</option>)}</select></label><label className="space-y-2 text-sm font-bold">Fecha<Input type="date" value={payment.paymentDate} onChange={(e)=>setPayment({...payment,paymentDate:e.target.value})}/></label><label className="space-y-2 text-sm font-bold">Monto pagado<Input value={payment.amount} onChange={e=>setPayment({...payment,amount:e.target.value})} inputMode="numeric" placeholder="$ 0"/></label><label className="space-y-2 text-sm font-bold">Forma de pago<select value={payment.method} onChange={e=>setPayment({...payment,method:e.target.value})} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal">{["Transferencia","Efectivo","Echeq","Cheque de tercero","Mercadería"].map(item=><option key={item}>{item}</option>)}</select></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Referencia o comprobante<Input value={payment.reference} onChange={e=>setPayment({...payment,reference:e.target.value})} placeholder="N.º de transferencia, cheque o recibo"/></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Observaciones<Textarea value={payment.note} onChange={e=>setPayment({...payment,note:e.target.value})} placeholder="Ej. Pago parcial, vencimiento del echeq o detalle de la mercadería entregada"/></label></div><div className="rounded-2xl bg-[#f7f3f5] p-4 text-sm"><div className="flex justify-between"><span>Saldo actual del proveedor</span><b>{money(suppliers.find(item=>item.name===payment.supplier)?.debt ?? 0)}</b></div><div className="mt-2 flex justify-between border-t pt-2"><span>Saldo después del pago</span><b>{money((suppliers.find(item=>item.name===payment.supplier)?.debt ?? 0) - (Number(payment.amount.replace(/\D/g,"")) || 0))}</b></div></div>{paymentError && <p className="text-sm font-bold text-red-600">{paymentError}</p>}<DialogFooter><Button variant="outline" onClick={()=>setPaymentOpen(false)}>Cancelar</Button><Button disabled={savingPayment} onClick={savePayment} className="bg-[#3b2931] text-white">{savingPayment ? "Guardando…" : "Registrar pago"}</Button></DialogFooter></DialogContent></Dialog>
 
-      <Dialog open={purchaseOpen} onOpenChange={setPurchaseOpen}><DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-[820px]"><DialogHeader><DialogTitle>Cargar factura de compra</DialogTitle><DialogDescription>Seleccioná el proveedor y agregá los productos incluidos en el comprobante.</DialogDescription></DialogHeader>
+      <Dialog open={purchaseOpen} onOpenChange={setPurchaseOpen}><DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-[980px]"><DialogHeader><DialogTitle>Cargar factura de compra</DialogTitle><DialogDescription>Seleccioná el proveedor y definí cómo viene expresado el IVA en cada precio.</DialogDescription></DialogHeader>
         <div className="grid gap-4 py-2 sm:grid-cols-2 lg:grid-cols-4">
-          <label className="space-y-2 text-sm font-bold lg:col-span-2">Proveedor<select value={purchase.supplier} onChange={e => { const supplierName=e.target.value; const firstProduct=""; setPurchase({...purchase,supplier:supplierName}); setInvoiceLines(lines=>lines.map((line,index)=>index===0?{...line,product:firstProduct}:line)); }} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal"><option value="">Seleccionar…</option>{suppliers.map(x=><option key={x.name}>{x.name}</option>)}</select></label>
+          <label className="space-y-2 text-sm font-bold lg:col-span-2">Proveedor<select value={purchase.supplier} onChange={e => { const supplierName=e.target.value; const supplierProfile=suppliers.find((item)=>item.name===supplierName); const priceMode=defaultInvoicePriceMode(supplierProfile?.taxMode ?? "Revisar"); setPurchase({...purchase,supplier:supplierName}); setInvoiceLines([{product:"",quantity:"1",price:"",priceMode}]); }} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal"><option value="">Seleccionar…</option>{suppliers.map(x=><option key={x.name}>{x.name}</option>)}</select></label>
           <label className="space-y-2 text-sm font-bold">Fecha<Input type="date" value={purchase.invoiceDate} onChange={(e)=>setPurchase({...purchase,invoiceDate:e.target.value})}/></label>
           <label className="space-y-2 text-sm font-bold">N.º de factura<Input value={purchase.invoice} onChange={e => setPurchase({...purchase, invoice:e.target.value})} placeholder="FC A 0001-00001"/></label>
-          <div className="rounded-2xl border bg-[#fff7fa] p-4 sm:col-span-2 lg:col-span-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-bold uppercase text-muted-foreground">Condición del proveedor</p><p className="font-black">{activeSupplier.name}</p></div><Badge className={activeSupplier.taxMode === "Con IVA" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-700"}>{activeSupplier.taxMode}</Badge></div><p className="mt-2 text-xs text-muted-foreground">{activeSupplier.taxMode === "Con IVA" ? "El IVA se calcula automáticamente según la alícuota del perfil de cada producto." : "No se agrega IVA: el precio cargado se toma como costo final."}</p></div>
+          <div className="rounded-2xl border bg-[#fff7fa] p-4 sm:col-span-2 lg:col-span-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-bold uppercase text-muted-foreground">Condición del proveedor</p><p className="font-black">{activeSupplier.name}</p></div><Badge className={activeSupplier.taxMode === "Con IVA" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-700"}>{activeSupplier.taxMode}</Badge></div><p className="mt-2 text-xs text-muted-foreground">El tratamiento del IVA se elige por producto: incluido en el precio, no incluido o compra en negro (N).</p></div>
         </div>
-        <div className="space-y-3"><div className="flex items-center justify-between"><h4 className="font-black">Productos de la factura</h4><Button variant="outline" size="sm" disabled={!purchase.supplier || materials.length === 0} onClick={() => setInvoiceLines(lines => [...lines, { product: "", quantity: "1", price: "" }])}><Plus /> Agregar producto</Button></div>
-          {invoiceLines.map((line, index) => { const profile = materials.find(item => item.name === line.product); const subtotal = (Number(line.quantity.replace(",", ".")) || 0) * (Number(line.price.replace(/\D/g, "")) || 0); return <div key={index} className="grid gap-3 rounded-2xl border bg-white p-4 sm:grid-cols-[2fr_.65fr_1fr_auto]"><label className="space-y-1 text-xs font-bold">Producto<Input list={`purchase-products-${index}`} value={line.product} onChange={e => setInvoiceLines(lines => lines.map((item, i) => i === index ? {...item, product:e.target.value} : item))} disabled={!purchase.supplier} placeholder={purchase.supplier ? "Escribí para buscar…" : "Primero elegí un proveedor"}/><datalist id={`purchase-products-${index}`}>{materials.map(item=><option key={item.id ?? item.name} value={item.name}/>)}</datalist><span className="block font-normal text-muted-foreground">{profile ? `${profile.pack} · IVA ${String(profile.vat).replace(".", ",")}%` : "Creá o seleccioná una materia prima del catálogo general."}</span></label><label className="space-y-1 text-xs font-bold">Cantidad<Input value={line.quantity} onChange={e => setInvoiceLines(lines => lines.map((item, i) => i === index ? {...item, quantity:e.target.value} : item))}/></label><label className="space-y-1 text-xs font-bold">Precio por unidad<Input value={line.price} onChange={e => setInvoiceLines(lines => lines.map((item, i) => i === index ? {...item, price:e.target.value} : item))} placeholder="$ 0" inputMode="numeric"/><span className="block text-right font-normal text-muted-foreground">Subtotal {money(subtotal)}</span></label><Button variant="ghost" className="self-center text-muted-foreground" disabled={invoiceLines.length === 1} onClick={() => setInvoiceLines(lines => lines.filter((_, i) => i !== index))}>Quitar</Button></div>})}
+        <div className="space-y-3"><div className="flex items-center justify-between"><h4 className="font-black">Productos de la factura</h4><Button variant="outline" size="sm" disabled={!purchase.supplier || materials.length === 0} onClick={() => setInvoiceLines(lines => [...lines, { product: "", quantity: "1", price: "", priceMode: defaultInvoicePriceMode(activeSupplier.taxMode) }])}><Plus /> Agregar producto</Button></div>
+          {invoiceLines.map((line, index) => { const profile = materials.find(item => item.name === line.product); const amounts = calculateInvoiceLine(line, Number(profile?.vat ?? 21)); return <div key={index} className="grid gap-3 rounded-2xl border bg-white p-4 sm:grid-cols-[2fr_.65fr_1fr_1.45fr_auto]"><label className="space-y-1 text-xs font-bold">Producto<Input list={`purchase-products-${index}`} value={line.product} onChange={e => setInvoiceLines(lines => lines.map((item, i) => i === index ? {...item, product:e.target.value} : item))} disabled={!purchase.supplier} placeholder={purchase.supplier ? "Escribí para buscar…" : "Primero elegí un proveedor"}/><datalist id={`purchase-products-${index}`}>{materials.map(item=><option key={item.id ?? item.name} value={item.name}/>)}</datalist><span className="block font-normal text-muted-foreground">{profile ? `${profile.pack} · IVA ${String(profile.vat).replace(".", ",")}%` : "Creá o seleccioná una materia prima del catálogo general."}</span></label><label className="space-y-1 text-xs font-bold">Cantidad<Input value={line.quantity} onChange={e => setInvoiceLines(lines => lines.map((item, i) => i === index ? {...item, quantity:e.target.value} : item))}/></label><label className="space-y-1 text-xs font-bold">Precio por unidad<Input value={line.price} onChange={e => setInvoiceLines(lines => lines.map((item, i) => i === index ? {...item, price:e.target.value} : item))} placeholder="$ 0" inputMode="decimal"/><span className="block text-right font-normal text-muted-foreground">Ingresado {invoiceMoney(parseInvoiceAmount(line.price))}</span></label><div className="space-y-1"><p className="text-xs font-bold">Tratamiento del IVA</p><div className="grid grid-cols-3 overflow-hidden rounded-lg border bg-white" role="group" aria-label="Tratamiento del IVA">{([{value:"included",label:"IVA incluido"},{value:"excluded",label:"IVA no incluido"},{value:"black",label:"N"}] as const).map((option)=><button key={option.value} type="button" onClick={()=>setInvoiceLines(lines=>lines.map((item,i)=>i===index?{...item,priceMode:option.value}:item))} className={`min-h-9 border-r px-2 py-1 text-[10px] font-bold leading-tight last:border-r-0 ${line.priceMode===option.value?"bg-[#3b2931] text-white":"hover:bg-[#f7f3f5]"}`}>{option.label}</button>)}</div><span className="block text-right text-[11px] text-muted-foreground">Neto {invoiceMoney(amounts.net)} · IVA {invoiceMoney(amounts.vat)}<br/><b>Total {invoiceMoney(amounts.gross)}</b></span></div><Button variant="ghost" className="self-center text-muted-foreground" disabled={invoiceLines.length === 1} onClick={() => setInvoiceLines(lines => lines.filter((_, i) => i !== index))}>Quitar</Button></div>})}
         </div>
         <div className="mt-2 grid gap-4 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold">Centro de costo<select value={purchase.center} onChange={e => setPurchase({...purchase, center:e.target.value})} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal">{["Fábrica","Av. de Mayo","Logística","Administración"].map(x=><option key={x}>{x}</option>)}</select></label><label className="space-y-2 text-sm font-bold">Condición de pago<select value={purchase.payment} onChange={e => setPurchase({...purchase, payment:e.target.value})} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal"><option>Pagado</option><option>Cuenta corriente</option></select></label></div>
-        <div className="ml-auto mt-3 w-full max-w-sm space-y-2 rounded-2xl bg-[#f7f3f5] p-4 text-sm"><div className="flex justify-between"><span>Neto</span><b>{money(invoiceNet)}</b></div><div className="flex justify-between"><span>IVA automático</span><b>{money(invoiceTax)}</b></div><div className="flex justify-between border-t pt-3 text-lg"><span>Total factura</span><b>{money(invoiceNet + invoiceTax)}</b></div>{purchase.payment === "Cuenta corriente" && <p className="text-xs text-amber-700">Se sumará automáticamente al saldo del proveedor.</p>}</div>
+        <div className="ml-auto mt-3 w-full max-w-sm space-y-2 rounded-2xl bg-[#f7f3f5] p-4 text-sm"><div className="flex justify-between"><span>Neto</span><b>{invoiceMoney(invoiceNet)}</b></div>{invoiceVat21 > 0 && <div className="flex justify-between text-xs"><span>IVA 21% · crédito fiscal</span><b>{invoiceMoney(invoiceVat21)}</b></div>}{invoiceVat105 > 0 && <div className="flex justify-between text-xs"><span>IVA 10,5% · crédito fiscal</span><b>{invoiceMoney(invoiceVat105)}</b></div>}<div className="flex justify-between"><span>IVA automático total</span><b>{invoiceMoney(invoiceTax)}</b></div><div className="flex justify-between border-t pt-3 text-lg"><span>Total factura</span><b>{invoiceMoney(invoiceGross)}</b></div>{purchase.payment === "Cuenta corriente" && <p className="text-xs text-amber-700">Se sumará automáticamente al saldo del proveedor.</p>}</div>
         {purchaseError && <p className="text-sm font-bold text-red-600">{purchaseError}</p>}
         <DialogFooter><Button variant="outline" onClick={()=>setPurchaseOpen(false)}>Cancelar</Button><Button disabled={savingPurchase} onClick={savePurchase} className="bg-[#3b2931] text-white">{savingPurchase ? "Guardando…" : "Guardar factura completa"}</Button></DialogFooter>
       </DialogContent></Dialog>
