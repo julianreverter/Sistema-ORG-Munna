@@ -295,7 +295,10 @@ const adminMenu = [
   ["usuarios", "Usuarios y permisos", Users],
 ] as const;
 
-const productionProducts = productCatalog.map(
+const inactiveProductCodes = new Set<string>();
+let runtimeProductCatalog: Product[] = [...productCatalog];
+const activeProductCatalog = () => runtimeProductCatalog.filter((product) => !inactiveProductCodes.has(product.code));
+const productionProducts = () => activeProductCatalog().map(
   (product) => `${product.code} · ${product.name}`,
 );
 
@@ -681,7 +684,7 @@ function Production({
   const [quantity, setQuantity] = useState("20");
   const [responsible, setResponsible] = useState("");
   const selectedResponsible = responsible || responsibleOptions[0]?.displayName || "Sin asignar";
-  const selectedProduct = productCatalog.find(
+  const selectedProduct = activeProductCatalog().find(
     (item) => `${item.code} · ${item.name}` === product,
   );
   const isWeightProduct = selectedProduct?.family === "Helado";
@@ -711,12 +714,12 @@ function Production({
           <label className="space-y-2 text-sm font-bold">
             Producto
             <Combobox
-              items={productionProducts}
+              items={productionProducts()}
               value={product}
               onValueChange={(value) => {
                 if (!value) return;
                 setProduct(value);
-                const nextProduct = productCatalog.find((item) => `${item.code} · ${item.name}` === value);
+                const nextProduct = activeProductCatalog().find((item) => `${item.code} · ${item.name}` === value);
                 const unitsInPresentation = nextProduct?.presentation.match(/x\s*(\d+)/i)?.[1];
                 setQuantity(unitsInPresentation ?? "1");
                 setSaved(false);
@@ -1318,14 +1321,16 @@ function Dispatch({ clients, availableUnits, onConfirm }: { clients: Client[]; a
   );
 }
 
-type ProductProfile = Product & { packageWeightKg?: number; unitType?: "kg" | "unidad" };
+type ProductProfile = Product & { packageWeightKg?: number; unitType?: "kg" | "unidad"; active?: boolean };
 
 function Products() {
   const [products, setProducts] = useState<ProductProfile[]>(productCatalog);
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<ProductProfile | null>(null);
   const [saving, setSaving] = useState(false);
+  const [deletingCode, setDeletingCode] = useState("");
   const [saveError, setSaveError] = useState("");
+  const [message, setMessage] = useState("");
 
   useEffect(() => {
     fetch("/api/operations")
@@ -1333,10 +1338,16 @@ function Products() {
         const data = await response.json() as { productProfiles?: ProductProfile[]; error?: string };
         if (!response.ok) throw new Error(data.error ?? "No se pudieron cargar los perfiles.");
         const saved = data.productProfiles ?? [];
-        const byCode = new Map(saved.map((item) => [item.code, item]));
-        const merged = productCatalog.map((item) => ({ ...item, ...byCode.get(item.code) }));
+        for (const product of saved) {
+          if (product.active === false) inactiveProductCodes.add(product.code);
+          else inactiveProductCodes.delete(product.code);
+        }
+        const activeSaved = saved.filter((item) => item.active !== false);
+        const byCode = new Map(activeSaved.map((item) => [item.code, item]));
         const catalogCodes = new Set(productCatalog.map((item) => item.code));
-        setProducts([...merged, ...saved.filter((item) => !catalogCodes.has(item.code))]);
+        const merged = productCatalog.map((item) => ({ ...item, ...byCode.get(item.code) }));
+        runtimeProductCatalog = [...merged, ...activeSaved.filter((item) => !catalogCodes.has(item.code))];
+        setProducts(runtimeProductCatalog.filter((item) => !inactiveProductCodes.has(item.code)));
       })
       .catch((error) => setSaveError(error instanceof Error ? error.message : "No se pudieron cargar los perfiles."));
   }, []);
@@ -1366,6 +1377,7 @@ function Products() {
     }
     setSaving(true);
     setSaveError("");
+    setMessage("");
     try {
       const response = await fetch("/api/operations", {
         method: "POST",
@@ -1374,12 +1386,40 @@ function Products() {
       });
       const data = await response.json() as { error?: string };
       if (!response.ok) throw new Error(data.error ?? "No se pudo guardar el producto.");
-      setProducts((current) => current.map((item) => item.code === editing.code ? editing : item));
+      inactiveProductCodes.delete(editing.code);
+      const savedProduct = { ...editing, active: true };
+      runtimeProductCatalog = runtimeProductCatalog.some((item) => item.code === editing.code)
+        ? runtimeProductCatalog.map((item) => item.code === editing.code ? savedProduct : item)
+        : [...runtimeProductCatalog, savedProduct];
+      setProducts((current) => current.map((item) => item.code === editing.code ? savedProduct : item));
       setEditing(null);
+      setMessage("Producto actualizado correctamente.");
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "No se pudo guardar el producto.");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const archiveProduct = async (product: ProductProfile) => {
+    setDeletingCode(product.code);
+    setSaveError("");
+    setMessage("");
+    try {
+      const response = await fetch("/api/operations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "archive-product", product }),
+      });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "No se pudo eliminar el producto.");
+      inactiveProductCodes.add(product.code);
+      setProducts((current) => current.filter((item) => item.code !== product.code));
+      setMessage(`${product.name} fue eliminado. El historial y los remitos anteriores se conservaron.`);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "No se pudo eliminar el producto.");
+    } finally {
+      setDeletingCode("");
     }
   };
 
@@ -1389,7 +1429,7 @@ function Products() {
         <div>
           <h2 className="text-2xl font-black">Maestro de productos</h2>
           <p className="text-sm text-muted-foreground">
-            {products.length} productos activos · seleccioná uno para editarlo
+            {products.length} productos activos · podés editar o eliminar cualquiera
           </p>
         </div>
         <div className="relative w-full md:w-96">
@@ -1397,6 +1437,7 @@ function Products() {
           <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por nombre, código o familia" className="h-10 rounded-xl pl-9" />
         </div>
       </div>
+      {message && <p className="mb-4 rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800">{message}</p>}
       {saveError && !editing && <p className="mb-4 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{saveError}</p>}
       <div className="max-h-[650px] overflow-auto rounded-2xl border">
         <Table>
@@ -1407,20 +1448,26 @@ function Products() {
           </TableHeader>
           <TableBody>
             {rows.map((product) => (
-              <TableRow key={product.code} className="cursor-pointer" onClick={() => { setSaveError(""); setEditing({ ...product }); }}>
+              <TableRow key={product.code}>
                 <TableCell className="font-mono font-bold">{product.code}</TableCell>
                 <TableCell className="font-bold">{product.name}</TableCell>
                 <TableCell>{product.family}</TableCell>
                 <TableCell>{product.presentation}</TableCell>
                 <TableCell className="text-right">{Number(product.packageWeightKg ?? 0) > 0 ? `${Number(product.packageWeightKg).toLocaleString("es-AR", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg` : "—"}</TableCell>
                 <TableCell className="text-right font-semibold">{currency.format(product.price)}</TableCell>
-                <TableCell className="text-right"><Button variant="outline" size="sm" className="rounded-lg" onClick={(event) => { event.stopPropagation(); setSaveError(""); setEditing({ ...product }); }}>Editar</Button></TableCell>
+                <TableCell className="text-right"><div className="flex justify-end gap-2">
+                  <Button variant="outline" size="sm" className="rounded-lg" onClick={() => { setSaveError(""); setMessage(""); setEditing({ ...product }); }}>Editar</Button>
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild><Button variant="outline" size="sm" className="rounded-lg border-red-200 text-red-700 hover:bg-red-50 hover:text-red-800">Eliminar</Button></AlertDialogTrigger>
+                    <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>¿Eliminar {product.name}?</AlertDialogTitle><AlertDialogDescription>Se quitará de Productos, Producción y Fórmulas. El historial producido y los remitos anteriores se conservarán.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancelar</AlertDialogCancel><AlertDialogAction disabled={deletingCode === product.code} onClick={() => archiveProduct(product)} className="bg-red-600 text-white hover:bg-red-700">{deletingCode === product.code ? "Eliminando…" : "Sí, eliminar"}</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
+                  </AlertDialog>
+                </div></TableCell>
               </TableRow>
             ))}
           </TableBody>
         </Table>
       </div>
-      <p className="mt-3 text-xs text-muted-foreground">Mostrando {rows.length} productos. Los cambios quedan guardados para todo el equipo.</p>
+      <p className="mt-3 text-xs text-muted-foreground">Eliminar archiva el producto: deja de aparecer para movimientos nuevos, pero mantiene intacta la trazabilidad anterior.</p>
       <Dialog open={Boolean(editing)} onOpenChange={(open) => { if (!open) { setEditing(null); setSaveError(""); } }}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader><DialogTitle>Editar producto</DialogTitle><DialogDescription>Configurá la presentación y su peso para que el sistema pueda calcular el costo real.</DialogDescription></DialogHeader>
@@ -2380,7 +2427,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
   const formulaIsExact = formulaTotalInTenThousandths === 10000;
   const formulaDifference = 1 - formulaQuantityTotal;
   const selectedFormulaProfile = productProfiles.find((item) => item.code === formula.productCode);
-  const selectedFormulaCatalogProduct = productCatalog.find((item) => item.code === formula.productCode);
+  const selectedFormulaCatalogProduct = activeProductCatalog().find((item) => item.code === formula.productCode);
   const formulaPresentationCost = Number(selectedFormulaProfile?.packageWeightKg ?? 0) > 0
     ? formulaCost * Number(selectedFormulaProfile?.packageWeightKg)
     : null;
@@ -2537,7 +2584,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
         items: record.items.map((item) => ({ materialId: String(item.materialId), quantityKg: String(item.quantityKg).replace(".", ",") })),
       });
     } else {
-      const firstProduct = productCatalog[0];
+      const firstProduct = activeProductCatalog()[0];
       setFormula({
         id: null,
         productCode: firstProduct?.code ?? "",
@@ -2551,7 +2598,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
 
   const saveFormula = async () => {
     const items = formula.items.map((item) => ({ materialId: Number(item.materialId), quantityKg: Number(item.quantityKg.replace(",", ".")) }));
-    const selectedProduct = productCatalog.find((item) => item.code === formula.productCode);
+    const selectedProduct = activeProductCatalog().find((item) => item.code === formula.productCode);
     const totalQuantityKg = items.reduce((sum, item) => sum + item.quantityKg, 0);
     if (!selectedProduct || !formula.name.trim() || items.length === 0 || items.some((item) => !item.materialId || item.quantityKg <= 0)) {
       setFormulaError("Elegí el producto terminado y completá todas las materias primas.");
@@ -2621,7 +2668,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
 
       <Dialog open={supplierOpen} onOpenChange={setSupplierOpen}><DialogContent className="sm:max-w-[620px]"><DialogHeader><DialogTitle>Nuevo proveedor</DialogTitle><DialogDescription>El proveedor quedará disponible para materias primas, facturas, pagos y cuenta corriente.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold sm:col-span-2">Nombre o razón social<Input value={supplier.name} onChange={(e)=>setSupplier({...supplier,name:e.target.value})} placeholder="Ej. Vacalin"/></label><label className="space-y-2 text-sm font-bold">Condición de IVA<select value={supplier.taxMode} onChange={(e)=>setSupplier({...supplier,taxMode:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option value="con_iva">Con IVA</option><option value="sin_iva">Sin IVA</option><option value="revisar">Revisar</option></select></label><label className="space-y-2 text-sm font-bold">Categoría<Input value={supplier.category} onChange={(e)=>setSupplier({...supplier,category:e.target.value})} placeholder="Ej. Materia prima"/></label></div>{supplierError && <p className="text-sm font-bold text-red-600">{supplierError}</p>}<DialogFooter><Button variant="outline" onClick={()=>setSupplierOpen(false)}>Cancelar</Button><Button disabled={savingSupplier} onClick={saveSupplier} className="bg-[#3b2931] text-white">{savingSupplier ? "Guardando…" : "Guardar proveedor"}</Button></DialogFooter></DialogContent></Dialog>
 
-      <Dialog open={formulaOpen} onOpenChange={setFormulaOpen}><DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-[820px]"><DialogHeader><DialogTitle>{formula.id ? "Editar fórmula" : "Nueva fórmula"}</DialogTitle><DialogDescription>Completá la composición de 1 kg exacto del producto. Si el total es menor o mayor, el sistema no permitirá guardarla.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-3"><label className="space-y-2 text-sm font-bold sm:col-span-3">Producto del maestro<Combobox items={productionProducts} value={formula.productCode ? productionProducts.find((item) => item.startsWith(`${formula.productCode} · `)) ?? "" : ""} onValueChange={(value) => { if (!value) { setFormula({...formula,productCode:"",name:""}); return; } const selectedProduct = productCatalog.find((item) => `${item.code} · ${item.name}` === value); if (selectedProduct) setFormula({...formula,productCode:selectedProduct.code,name:selectedProduct.name}); }}><ComboboxInput placeholder="Escribí el nombre o código del producto…" className="h-11 w-full rounded-xl bg-white font-normal"/><ComboboxContent><ComboboxEmpty>No encontramos ese producto en el maestro.</ComboboxEmpty><ComboboxList>{(item) => <ComboboxItem key={item} value={item}>{item}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox><span className="block text-xs font-normal text-muted-foreground">La fórmula queda vinculada a este producto del maestro.</span></label><div className={`rounded-2xl border-2 p-4 ${formulaIsExact ? "border-emerald-500 bg-emerald-50" : "border-amber-400 bg-amber-50"}`}><p className="text-xs font-bold uppercase text-muted-foreground">Total de ingredientes</p><p className="mt-1 text-2xl font-black">{formulaQuantityTotal.toLocaleString("es-AR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} / 1,0000 kg</p><p className={`mt-1 text-xs font-bold ${formulaIsExact ? "text-emerald-700" : "text-amber-800"}`}>{formulaIsExact ? "Exacto: ya se puede guardar" : formulaDifference > 0 ? `Faltan ${formulaDifference.toLocaleString("es-AR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} kg` : `Sobran ${Math.abs(formulaDifference).toLocaleString("es-AR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} kg`}</p></div><div className="rounded-2xl bg-[#fff3f7] p-4 sm:col-span-2"><p className="text-xs font-bold uppercase text-muted-foreground">Costo calculado</p><div className="mt-2 flex flex-wrap gap-6"><div><b className="text-lg">{money(formulaCost)}</b><p className="text-xs text-muted-foreground">Por 1 kg elaborado</p></div>{formulaPresentationCost != null && <div><b className="text-lg">{money(formulaPresentationCost)}</b><p className="text-xs text-muted-foreground">Presentación de {Number(selectedFormulaProfile?.packageWeightKg).toLocaleString("es-AR", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg</p></div>}</div></div></div>{selectedFormulaCatalogProduct && selectedFormulaCatalogProduct.family !== "Helado" && Number(selectedFormulaProfile?.packageWeightKg ?? 0) <= 0 && <p className="rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-800">Para calcular el costo de la presentación, completá su peso neto en Maestro de productos.</p>}<div className="space-y-3"><div className="flex items-center justify-between"><h4 className="font-black">Materias primas para 1 kg</h4><Button type="button" variant="outline" size="sm" onClick={()=>setFormula({...formula,items:[...formula.items,{materialId:materials[0]?.id ? String(materials[0].id) : "",quantityKg:""}]})}><Plus /> Agregar ingrediente</Button></div>{formula.items.map((item,index)=>{ const selectedMaterial=materials.find(row=>String(row.id)===item.materialId); const quantity=Number(item.quantityKg.replace(",","."))||0; return <div key={index} className="grid gap-3 rounded-2xl border bg-white p-4 sm:grid-cols-[2fr_1fr_1fr_auto]"><label className="space-y-1 text-xs font-bold">Materia prima<select value={item.materialId} onChange={(e)=>setFormula({...formula,items:formula.items.map((row,i)=>i===index?{...row,materialId:e.target.value}:row)})} className="h-10 w-full rounded-md border bg-white px-3 text-sm font-normal"><option value="">Seleccionar…</option>{materials.filter(row=>row.id != null).map(row=><option key={row.id} value={String(row.id)}>{row.name}</option>)}</select></label><label className="space-y-1 text-xs font-bold">Cantidad en kg<Input value={item.quantityKg} onChange={(e)=>setFormula({...formula,items:formula.items.map((row,i)=>i===index?{...row,quantityKg:e.target.value}:row)})} inputMode="decimal" placeholder="0,0000"/><span className="block font-normal text-muted-foreground">kg dentro de 1 kg final</span></label><div className="self-end rounded-xl bg-[#f7f3f5] px-3 py-2 text-right"><p className="text-xs text-muted-foreground">Costo</p><b>{money(quantity * Number(selectedMaterial?.cost ?? 0))}</b></div><Button type="button" variant="ghost" className="self-end text-muted-foreground" disabled={formula.items.length===1} onClick={()=>setFormula({...formula,items:formula.items.filter((_,i)=>i!==index)})}>Quitar</Button></div>})}</div>{formulaError && <p className="text-sm font-bold text-red-600">{formulaError}</p>}<DialogFooter><Button variant="outline" onClick={()=>setFormulaOpen(false)}>Cancelar</Button><Button disabled={savingFormula || !formulaIsExact} onClick={saveFormula} className="bg-[#3b2931] text-white">{savingFormula ? "Guardando…" : "Guardar fórmula"}</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={formulaOpen} onOpenChange={setFormulaOpen}><DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-[820px]"><DialogHeader><DialogTitle>{formula.id ? "Editar fórmula" : "Nueva fórmula"}</DialogTitle><DialogDescription>Completá la composición de 1 kg exacto del producto. Si el total es menor o mayor, el sistema no permitirá guardarla.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-3"><label className="space-y-2 text-sm font-bold sm:col-span-3">Producto del maestro<Combobox items={productionProducts()} value={formula.productCode ? productionProducts().find((item) => item.startsWith(`${formula.productCode} · `)) ?? "" : ""} onValueChange={(value) => { if (!value) { setFormula({...formula,productCode:"",name:""}); return; } const selectedProduct = activeProductCatalog().find((item) => `${item.code} · ${item.name}` === value); if (selectedProduct) setFormula({...formula,productCode:selectedProduct.code,name:selectedProduct.name}); }}><ComboboxInput placeholder="Escribí el nombre o código del producto…" className="h-11 w-full rounded-xl bg-white font-normal"/><ComboboxContent><ComboboxEmpty>No encontramos ese producto en el maestro.</ComboboxEmpty><ComboboxList>{(item) => <ComboboxItem key={item} value={item}>{item}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox><span className="block text-xs font-normal text-muted-foreground">La fórmula queda vinculada a este producto del maestro.</span></label><div className={`rounded-2xl border-2 p-4 ${formulaIsExact ? "border-emerald-500 bg-emerald-50" : "border-amber-400 bg-amber-50"}`}><p className="text-xs font-bold uppercase text-muted-foreground">Total de ingredientes</p><p className="mt-1 text-2xl font-black">{formulaQuantityTotal.toLocaleString("es-AR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} / 1,0000 kg</p><p className={`mt-1 text-xs font-bold ${formulaIsExact ? "text-emerald-700" : "text-amber-800"}`}>{formulaIsExact ? "Exacto: ya se puede guardar" : formulaDifference > 0 ? `Faltan ${formulaDifference.toLocaleString("es-AR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} kg` : `Sobran ${Math.abs(formulaDifference).toLocaleString("es-AR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} kg`}</p></div><div className="rounded-2xl bg-[#fff3f7] p-4 sm:col-span-2"><p className="text-xs font-bold uppercase text-muted-foreground">Costo calculado</p><div className="mt-2 flex flex-wrap gap-6"><div><b className="text-lg">{money(formulaCost)}</b><p className="text-xs text-muted-foreground">Por 1 kg elaborado</p></div>{formulaPresentationCost != null && <div><b className="text-lg">{money(formulaPresentationCost)}</b><p className="text-xs text-muted-foreground">Presentación de {Number(selectedFormulaProfile?.packageWeightKg).toLocaleString("es-AR", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg</p></div>}</div></div></div>{selectedFormulaCatalogProduct && selectedFormulaCatalogProduct.family !== "Helado" && Number(selectedFormulaProfile?.packageWeightKg ?? 0) <= 0 && <p className="rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-800">Para calcular el costo de la presentación, completá su peso neto en Maestro de productos.</p>}<div className="space-y-3"><div className="flex items-center justify-between"><h4 className="font-black">Materias primas para 1 kg</h4><Button type="button" variant="outline" size="sm" onClick={()=>setFormula({...formula,items:[...formula.items,{materialId:materials[0]?.id ? String(materials[0].id) : "",quantityKg:""}]})}><Plus /> Agregar ingrediente</Button></div>{formula.items.map((item,index)=>{ const selectedMaterial=materials.find(row=>String(row.id)===item.materialId); const quantity=Number(item.quantityKg.replace(",","."))||0; return <div key={index} className="grid gap-3 rounded-2xl border bg-white p-4 sm:grid-cols-[2fr_1fr_1fr_auto]"><label className="space-y-1 text-xs font-bold">Materia prima<select value={item.materialId} onChange={(e)=>setFormula({...formula,items:formula.items.map((row,i)=>i===index?{...row,materialId:e.target.value}:row)})} className="h-10 w-full rounded-md border bg-white px-3 text-sm font-normal"><option value="">Seleccionar…</option>{materials.filter(row=>row.id != null).map(row=><option key={row.id} value={String(row.id)}>{row.name}</option>)}</select></label><label className="space-y-1 text-xs font-bold">Cantidad en kg<Input value={item.quantityKg} onChange={(e)=>setFormula({...formula,items:formula.items.map((row,i)=>i===index?{...row,quantityKg:e.target.value}:row)})} inputMode="decimal" placeholder="0,0000"/><span className="block font-normal text-muted-foreground">kg dentro de 1 kg final</span></label><div className="self-end rounded-xl bg-[#f7f3f5] px-3 py-2 text-right"><p className="text-xs text-muted-foreground">Costo</p><b>{money(quantity * Number(selectedMaterial?.cost ?? 0))}</b></div><Button type="button" variant="ghost" className="self-end text-muted-foreground" disabled={formula.items.length===1} onClick={()=>setFormula({...formula,items:formula.items.filter((_,i)=>i!==index)})}>Quitar</Button></div>})}</div>{formulaError && <p className="text-sm font-bold text-red-600">{formulaError}</p>}<DialogFooter><Button variant="outline" onClick={()=>setFormulaOpen(false)}>Cancelar</Button><Button disabled={savingFormula || !formulaIsExact} onClick={saveFormula} className="bg-[#3b2931] text-white">{savingFormula ? "Guardando…" : "Guardar fórmula"}</Button></DialogFooter></DialogContent></Dialog>
 
       <Dialog open={materialOpen} onOpenChange={setMaterialOpen}><DialogContent className="sm:max-w-[620px]"><DialogHeader><DialogTitle>Nueva materia prima</DialogTitle><DialogDescription>Creala una sola vez en el catálogo general. Después podrá comprarse a cualquier proveedor y utilizarse en las fórmulas.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold sm:col-span-2">Nombre de la materia prima<Input value={material.name} onChange={(e)=>setMaterial({...material,name:e.target.value})} placeholder="Ej. Pasta de pistacho"/></label><label className="space-y-2 text-sm font-bold">Unidad de costo<select value={material.unit} onChange={(e)=>setMaterial({...material,unit:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option value="kg">Kilogramo</option><option value="unidad">Unidad</option></select></label><label className="space-y-2 text-sm font-bold">Contenido por envase<Input value={material.contentPerPackage} onChange={(e)=>setMaterial({...material,contentPerPackage:e.target.value})} inputMode="decimal" placeholder="Ej. 10"/><span className="block text-xs font-normal text-muted-foreground">Cuántos kg o unidades trae cada bolsa, caja o balde.</span></label><label className="space-y-2 text-sm font-bold sm:col-span-2">IVA habitual<select value={material.vat} onChange={(e)=>setMaterial({...material,vat:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option value="21">21%</option><option value="10.5">10,5%</option><option value="0">0%</option></select></label></div>{materialError && <p className="text-sm font-bold text-red-600">{materialError}</p>}<DialogFooter><Button variant="outline" onClick={()=>setMaterialOpen(false)}>Cancelar</Button><Button disabled={savingMaterial} onClick={saveMaterial} className="bg-[#3b2931] text-white">{savingMaterial ? "Guardando…" : "Guardar materia prima"}</Button></DialogFooter></DialogContent></Dialog>
 
@@ -2714,9 +2761,21 @@ export default function Home() {
     let active = true;
     fetch("/api/operations")
       .then(async (response) => {
-        const data = await response.json() as { stock?: Array<Record<string, unknown>>; productionHistory?: ProductionHistoryRow[]; staff?: StaffMember[]; currentUser?: StaffMember; nextUniqueCode?: string; error?: string };
+        const data = await response.json() as { stock?: Array<Record<string, unknown>>; productionHistory?: ProductionHistoryRow[]; staff?: StaffMember[]; currentUser?: StaffMember; nextUniqueCode?: string; productProfiles?: ProductProfile[]; error?: string };
         if (!response.ok) throw new Error(data.error ?? "No se pudo conectar con la base de datos.");
         if (!active) return;
+        const savedProfiles = data.productProfiles ?? [];
+        for (const product of savedProfiles) {
+          if (product.active === false) inactiveProductCodes.add(product.code);
+          else inactiveProductCodes.delete(product.code);
+        }
+        const activeProfiles = savedProfiles.filter((item) => item.active !== false);
+        const profilesByCode = new Map(activeProfiles.map((item) => [item.code, item]));
+        const baseCodes = new Set(productCatalog.map((item) => item.code));
+        runtimeProductCatalog = [
+          ...productCatalog.map((item) => ({ ...item, ...profilesByCode.get(item.code) })),
+          ...activeProfiles.filter((item) => !baseCodes.has(item.code)),
+        ];
         setProductionRecords((data.stock ?? []).map((unit) => ({
           uniqueCode: String(unit.uniqueCode), productCode: String(unit.productCode), productName: String(unit.productName),
           container: String(unit.container), weight: unit.weightKg == null ? null : Number(unit.weightKg), units: unit.units == null ? null : Number(unit.units),
