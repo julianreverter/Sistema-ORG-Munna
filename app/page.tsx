@@ -2263,6 +2263,79 @@ type RawMaterial = {
   date: string;
 };
 
+type CostPurchaseRow = {
+  id: number;
+  supplierId: number;
+  supplier: string;
+  invoice: string;
+  invoiceDate: string;
+  date: string;
+  detail: string;
+  center: string;
+  net: number;
+  vat21: number;
+  vat105: number;
+  tax: number;
+  total: number;
+  status: string;
+  paymentStatus: string;
+  grossTotal: number;
+  costCenter: string;
+};
+
+type SupplierCostProfile = {
+  id: number;
+  name: string;
+  taxMode: string;
+  category: string;
+  debt: number;
+  invoices: string;
+  date: string;
+};
+
+type SupplierPaymentRow = {
+  id: number;
+  supplierId: number;
+  supplier: string;
+  paymentDate: string;
+  date: string;
+  amount: number;
+  method: string;
+  reference: string;
+  note: string;
+};
+
+type FormulaItemRecord = {
+  id?: number;
+  materialId: number;
+  materialName: string;
+  quantityKg: number;
+  unitCost: number;
+  lineCost: number;
+};
+
+type FormulaRecord = {
+  id: number;
+  productCode: string;
+  productName: string;
+  name: string;
+  yieldKg: number;
+  batch: string;
+  ingredients: number;
+  recipe: number;
+  perKg: number;
+  updated: string;
+  items: FormulaItemRecord[];
+};
+
+type FormulaDraft = {
+  id: number | null;
+  productCode: string;
+  name: string;
+  yieldKg: string;
+  items: Array<{ materialId: string; quantityKg: string }>;
+};
+
 const initialRawMaterials: RawMaterial[] = [
   { name: "Leche entera", unit: "litro", pack: "Caja x 12 l", vat: 10.5, cost: 1475, previous: 1390, supplier: "Distribuidora Centro", date: "10/10/26" },
   { name: "Crema heladera 39%", unit: "litro", pack: "Bidón x 10 l", vat: 21, cost: 5000, previous: 4780, supplier: "Vacalin", date: "13/10/26" },
@@ -2286,29 +2359,43 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
   const [purchaseOpen, setPurchaseOpen] = useState(initialPurchaseOpen);
   const [savingPurchase, setSavingPurchase] = useState(false);
   const [purchaseError, setPurchaseError] = useState("");
+  const [purchaseQuery, setPurchaseQuery] = useState("");
   const [paymentOpen, setPaymentOpen] = useState(false);
+  const [savingPayment, setSavingPayment] = useState(false);
+  const [paymentError, setPaymentError] = useState("");
   const [expenseOpen, setExpenseOpen] = useState(false);
   const [savingExpense, setSavingExpense] = useState(false);
   const [expenseError, setExpenseError] = useState("");
   const [expenseRows, setExpenseRows] = useState<FinancialExpense[]>([]);
-  const [materials, setMaterials] = useState<RawMaterial[]>(initialRawMaterials);
+  const [materials, setMaterials] = useState<RawMaterial[]>([]);
   const [materialOpen, setMaterialOpen] = useState(false);
   const [savingMaterial, setSavingMaterial] = useState(false);
   const [materialError, setMaterialError] = useState("");
-  const [material, setMaterial] = useState({ name: "", supplier: "Vacalin", supplierDescription: "", unit: "kg", contentPerPackage: "1", vat: "21" });
-  const [purchases, setPurchases] = useState(initialPurchaseRows);
-  const [payments, setPayments] = useState(initialPaymentRows);
-  const [purchase, setPurchase] = useState({ supplier: "Vacalin", invoice: "", center: "Fábrica", payment: "Cuenta corriente" });
-  const [payment, setPayment] = useState({ supplier: "Vacalin", amount: "", method: "Transferencia", reference: "", note: "" });
+  const [material, setMaterial] = useState({ name: "", supplier: "", supplierDescription: "", unit: "kg", contentPerPackage: "1", vat: "21" });
+  const [purchases, setPurchases] = useState<CostPurchaseRow[]>([]);
+  const [payments, setPayments] = useState<SupplierPaymentRow[]>([]);
+  const [suppliers, setSuppliers] = useState<SupplierCostProfile[]>([]);
+  const [supplierOpen, setSupplierOpen] = useState(false);
+  const [savingSupplier, setSavingSupplier] = useState(false);
+  const [supplierError, setSupplierError] = useState("");
+  const [supplier, setSupplier] = useState({ name: "", taxMode: "con_iva", category: "Materia prima" });
+  const [selectedSupplierName, setSelectedSupplierName] = useState("");
+  const [formulas, setFormulas] = useState<FormulaRecord[]>([]);
+  const [formulaOpen, setFormulaOpen] = useState(false);
+  const [savingFormula, setSavingFormula] = useState(false);
+  const [formulaError, setFormulaError] = useState("");
+  const [formula, setFormula] = useState<FormulaDraft>({ id: null, productCode: "", name: "", yieldKg: "60", items: [{ materialId: "", quantityKg: "" }] });
+  const [purchase, setPurchase] = useState({ supplier: "", invoice: "", invoiceDate: today, center: "Fábrica", payment: "Cuenta corriente" });
+  const [payment, setPayment] = useState({ supplier: "", paymentDate: today, amount: "", method: "Transferencia", reference: "", note: "" });
   const [expense, setExpense] = useState({ expenseDate: today, area: "Fábrica", category: "Servicios", concept: "", amount: "", notes: "" });
-  const [invoiceLines, setInvoiceLines] = useState([{ product: "Crema heladera 39%", quantity: "1", price: "" }]);
+  const [invoiceLines, setInvoiceLines] = useState([{ product: "", quantity: "1", price: "" }]);
   const tabs: [CostTab, string, typeof Calculator][] = [
     ["resumen", "Resumen", LayoutDashboard], ["compras", "Facturas", PackagePlus], ["gastos", "Gastos generales", Calculator], ["iva", "IVA fiscal", FileText], ["pagos", "Pagos", WalletCards],
     ["proveedores", "Proveedores", WalletCards], ["materias", "Materias primas", Boxes],
     ["formulas", "Fórmulas", FlaskConical],
   ];
   const total = costCenters.reduce((sum, item) => sum + item.amount, 0);
-  const activeSupplier = supplierProfiles.find((supplier) => supplier.name === purchase.supplier) ?? supplierProfiles[0];
+  const activeSupplier = suppliers.find((item) => item.name === purchase.supplier) ?? { id: 0, name: purchase.supplier, taxMode: "Revisar", category: "", debt: 0, invoices: "0 facturas", date: "Sin compras" };
   const invoiceNet = invoiceLines.reduce((sum, line) => sum + (Number(line.quantity.replace(",", ".")) || 0) * (Number(line.price.replace(/\D/g, "")) || 0), 0);
   const invoiceTax = activeSupplier.taxMode === "Con IVA" ? invoiceLines.reduce((sum, line) => {
     const product = materials.find((item) => item.name === line.product);
@@ -2319,90 +2406,217 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
   const invoiceVat105 = activeSupplier.taxMode === "Con IVA" ? invoiceLines.reduce((sum, line) => { const product = materials.find((item) => item.name === line.product); const subtotal = (Number(line.quantity.replace(",", ".")) || 0) * (Number(line.price.replace(/\D/g, "")) || 0); return sum + (product?.vat === 10.5 ? subtotal * .105 : 0); }, 0) : 0;
   const monthlyVat21 = purchases.reduce((sum, row) => sum + row.vat21, 0);
   const monthlyVat105 = purchases.reduce((sum, row) => sum + row.vat105, 0);
-  const expenseCategories = ["Servicios", "Alquileres", "Sueldos", "Mantenimiento", "Logística", "Impuestos", "Otros", "Inversiones"];
+  const expenseCategories = ["Servicios", "Alquileres", "Sueldos", "Mantenimiento", "Inversiones", "Otros"];
+  const selectedSupplier = suppliers.find((item) => item.name === selectedSupplierName) ?? suppliers[0];
+  const supplierLedger = useMemo(() => {
+    if (!selectedSupplier) return [];
+    const movements = [
+      ...purchases.filter((row) => row.supplierId === selectedSupplier.id && row.paymentStatus === "cuenta_corriente").map((row) => ({ dateKey: row.invoiceDate, date: row.date, detail: row.invoice, debit: row.total, credit: 0 })),
+      ...payments.filter((row) => row.supplierId === selectedSupplier.id).map((row) => ({ dateKey: row.paymentDate, date: row.date, detail: `Pago · ${row.method} ${row.reference}`, debit: 0, credit: row.amount })),
+    ].sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+    let balance = 0;
+    return movements.map((movement) => {
+      balance += movement.debit - movement.credit;
+      return { ...movement, balance };
+    });
+  }, [purchases, payments, selectedSupplier]);
+
+  const formulaCost = formula.items.reduce((sum, item) => {
+    const materialRow = materials.find((row) => String(row.id) === item.materialId);
+    return sum + (Number(item.quantityKg.replace(",", ".")) || 0) * Number(materialRow?.cost ?? 0);
+  }, 0);
+  const formulaYield = Number(formula.yieldKg.replace(",", ".")) || 0;
+  const filteredPurchases = purchases.filter((row) => {
+    const query = purchaseQuery.trim().toLowerCase();
+    return !query || row.invoice.toLowerCase().includes(query) || row.supplier.toLowerCase().includes(query);
+  });
+
+  const loadCostData = async () => {
+    const response = await fetch("/api/operations");
+    const data = await response.json() as {
+      operatingExpenses?: FinancialExpense[];
+      rawMaterials?: RawMaterial[];
+      purchases?: CostPurchaseRow[];
+      supplierPayments?: SupplierPaymentRow[];
+      suppliers?: SupplierCostProfile[];
+      formulas?: FormulaRecord[];
+      error?: string;
+    };
+    if (!response.ok) throw new Error(data.error ?? "No se pudieron cargar los datos de costos.");
+    const loadedMaterials = data.rawMaterials ?? [];
+    const loadedSuppliers = data.suppliers ?? [];
+    setExpenseRows(data.operatingExpenses ?? []);
+    setMaterials(loadedMaterials);
+    setPurchases(data.purchases ?? []);
+    setPayments(data.supplierPayments ?? []);
+    setSuppliers(loadedSuppliers);
+    setFormulas(data.formulas ?? []);
+    setSelectedSupplierName((current) => current && loadedSuppliers.some((item) => item.name === current) ? current : loadedSuppliers[0]?.name ?? "");
+    setPurchase((current) => ({ ...current, supplier: current.supplier && loadedSuppliers.some((item) => item.name === current.supplier) ? current.supplier : loadedSuppliers[0]?.name ?? "" }));
+    setPayment((current) => ({ ...current, supplier: current.supplier && loadedSuppliers.some((item) => item.name === current.supplier) ? current.supplier : loadedSuppliers[0]?.name ?? "" }));
+    setMaterial((current) => ({ ...current, supplier: current.supplier || loadedSuppliers[0]?.name || "" }));
+    setInvoiceLines((current) => current.map((line, index) => ({ ...line, product: line.product && loadedMaterials.some((item) => item.name === line.product) ? line.product : index === 0 ? loadedMaterials[0]?.name ?? "" : line.product })));
+  };
+
   useEffect(() => {
-    fetch("/api/operations").then(async (response) => {
-      const data = await response.json() as { operatingExpenses?: FinancialExpense[]; rawMaterials?: RawMaterial[]; error?: string };
-      if (!response.ok) throw new Error(data.error ?? "No se pudieron cargar los datos de costos.");
-      setExpenseRows(data.operatingExpenses ?? []);
-      if ((data.rawMaterials ?? []).length > 0) setMaterials(data.rawMaterials ?? []);
-    }).catch((loadError) => setExpenseError(loadError instanceof Error ? loadError.message : "No se pudieron cargar los gastos."));
+    loadCostData().catch((loadError) => setExpenseError(loadError instanceof Error ? loadError.message : "No se pudieron cargar los datos de costos."));
   }, []);
+
   const saveExpense = async () => {
     const amount = Number(expense.amount.replace(/\D/g, ""));
-    if (!amount || !expense.concept.trim()) return;
+    if (!amount || !expense.concept.trim()) {
+      setExpenseError("Completá el concepto y un importe mayor a cero.");
+      return;
+    }
     setSavingExpense(true); setExpenseError("");
     try {
       const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "register-expense", expense: { ...expense, amount } }) });
       const data = await response.json() as { error?: string };
       if (!response.ok) throw new Error(data.error ?? "No se pudo guardar el gasto.");
-      const refreshed = await fetch("/api/operations");
-      const refreshedData = await refreshed.json() as { operatingExpenses?: FinancialExpense[] };
-      setExpenseRows(refreshedData.operatingExpenses ?? []);
+      await loadCostData();
       setExpenseOpen(false);
       setExpense({ expenseDate: today, area: "Fábrica", category: "Servicios", concept: "", amount: "", notes: "" });
     } catch (saveError) {
       setExpenseError(saveError instanceof Error ? saveError.message : "No se pudo guardar el gasto.");
     } finally { setSavingExpense(false); }
   };
+
+  const saveSupplier = async () => {
+    if (!supplier.name.trim()) {
+      setSupplierError("Ingresá el nombre del proveedor.");
+      return;
+    }
+    setSavingSupplier(true); setSupplierError("");
+    try {
+      const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save-supplier", supplier }) });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "No se pudo guardar el proveedor.");
+      await loadCostData();
+      setSupplierOpen(false);
+      setSupplier({ name: "", taxMode: "con_iva", category: "Materia prima" });
+    } catch (saveError) {
+      setSupplierError(saveError instanceof Error ? saveError.message : "No se pudo guardar el proveedor.");
+    } finally { setSavingSupplier(false); }
+  };
+
   const saveMaterial = async () => {
     const contentPerPackage = Number(material.contentPerPackage.replace(",", "."));
     if (!material.name.trim() || !material.supplier.trim() || !contentPerPackage || contentPerPackage <= 0) {
       setMaterialError("Completá el nombre, el proveedor y un contenido por envase mayor a cero.");
       return;
     }
-    setSavingMaterial(true);
-    setMaterialError("");
+    setSavingMaterial(true); setMaterialError("");
     try {
       const response = await fetch("/api/operations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "register-raw-material",
-          material: { ...material, contentPerPackage, vat: Number(material.vat) },
-        }),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "register-raw-material", material: { ...material, contentPerPackage, vat: Number(material.vat) } }),
       });
-      const data = await response.json() as { material?: RawMaterial; error?: string };
-      if (!response.ok || !data.material) throw new Error(data.error ?? "No se pudo guardar la materia prima.");
-      setMaterials((rows) => [data.material!, ...rows.filter((row) => row.id !== data.material!.id)]);
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "No se pudo guardar la materia prima.");
+      await loadCostData();
       setMaterialOpen(false);
       setMaterial({ name: "", supplier: material.supplier, supplierDescription: "", unit: "kg", contentPerPackage: "1", vat: "21" });
     } catch (saveError) {
       setMaterialError(saveError instanceof Error ? saveError.message : "No se pudo guardar la materia prima.");
-    } finally {
-      setSavingMaterial(false);
-    }
+    } finally { setSavingMaterial(false); }
   };
 
   const savePurchase = async () => {
-    if (!purchase.invoice || !invoiceNet) return;
-    setSavingPurchase(true);
-    setPurchaseError("");
+    if (!purchase.supplier || !purchase.invoice.trim() || !invoiceNet || invoiceLines.some((line) => !line.product)) {
+      setPurchaseError("Completá proveedor, número de factura, productos y precios.");
+      return;
+    }
+    setSavingPurchase(true); setPurchaseError("");
     try {
       const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
         action: "register-purchase", purchase, supplierTaxMode: activeSupplier.taxMode,
-        lines: invoiceLines.map((line) => { const profile = materials.find((item) => item.name === line.product) ?? materials[0]; return { ...line, vatRate: profile.vat, contentPerPackage: profile.contentPerPackage ?? Number(profile.pack.match(/[\d,.]+/)?.[0].replace(",", ".") ?? 1), costUnit: profile.unit }; }),
+        lines: invoiceLines.map((line) => {
+          const profile = materials.find((item) => item.name === line.product);
+          if (!profile) throw new Error("Una materia prima seleccionada ya no está disponible.");
+          return { ...line, vatRate: profile.vat, contentPerPackage: profile.contentPerPackage ?? Number(profile.pack.match(/[\d,.]+/)?.[0].replace(",", ".") ?? 1), costUnit: profile.unit };
+        }),
         totals: { net: invoiceNet, vat: invoiceTax, gross: invoiceNet + invoiceTax },
       }) });
       const result = await response.json() as { error?: string };
       if (!response.ok) throw new Error(result.error ?? "No se pudo guardar la compra.");
-      setPurchases((rows) => [{ date: new Date().toLocaleDateString("es-AR"), invoice: purchase.invoice, supplier: purchase.supplier, detail: `${invoiceLines.length} ${invoiceLines.length === 1 ? "producto" : "productos"}`, center: purchase.center, net: invoiceNet, vat21: invoiceVat21, vat105: invoiceVat105, tax: invoiceTax, total: invoiceNet + invoiceTax, status: purchase.payment }, ...rows]);
+      await loadCostData();
       setPurchaseOpen(false);
-      setPurchase({ supplier: "Vacalin", invoice: "", center: "Fábrica", payment: "Cuenta corriente" });
-      setInvoiceLines([{ product: "Crema heladera 39%", quantity: "1", price: "" }]);
+      setPurchase((current) => ({ supplier: current.supplier, invoice: "", invoiceDate: today, center: "Fábrica", payment: "Cuenta corriente" }));
+      setInvoiceLines([{ product: materials.find((item) => item.supplier === purchase.supplier)?.name ?? materials[0]?.name ?? "", quantity: "1", price: "" }]);
     } catch (error) {
       setPurchaseError(error instanceof Error ? error.message : "No se pudo guardar la compra.");
-    } finally {
-      setSavingPurchase(false);
-    }
+    } finally { setSavingPurchase(false); }
   };
-  const savePayment = () => {
+
+  const savePayment = async () => {
     const amount = Number(payment.amount.replace(/\D/g, ""));
-    if (!amount) return;
-    setPayments((rows) => [{ date: "13/10/2026", supplier: payment.supplier, amount, method: payment.method, reference: payment.reference || "Sin referencia", note: payment.note || "Pago a cuenta" }, ...rows]);
-    setPaymentOpen(false);
-    setPayment({ supplier: "Vacalin", amount: "", method: "Transferencia", reference: "", note: "" });
+    if (!payment.supplier || !amount) {
+      setPaymentError("Seleccioná un proveedor e ingresá un monto mayor a cero.");
+      return;
+    }
+    setSavingPayment(true); setPaymentError("");
+    try {
+      const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "register-supplier-payment", payment: { ...payment, amount } }) });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "No se pudo registrar el pago.");
+      await loadCostData();
+      setPaymentOpen(false);
+      setPayment((current) => ({ supplier: current.supplier, paymentDate: today, amount: "", method: "Transferencia", reference: "", note: "" }));
+    } catch (saveError) {
+      setPaymentError(saveError instanceof Error ? saveError.message : "No se pudo registrar el pago.");
+    } finally { setSavingPayment(false); }
   };
+
+  const openFormula = (record?: FormulaRecord) => {
+    setFormulaError("");
+    if (record) {
+      setFormula({
+        id: record.id,
+        productCode: record.productCode,
+        name: record.name,
+        yieldKg: String(record.yieldKg).replace(".", ","),
+        items: record.items.map((item) => ({ materialId: String(item.materialId), quantityKg: String(item.quantityKg).replace(".", ",") })),
+      });
+    } else {
+      const firstProduct = productCatalog[0];
+      setFormula({
+        id: null,
+        productCode: firstProduct?.code ?? "",
+        name: firstProduct?.name ?? "",
+        yieldKg: "60",
+        items: [{ materialId: materials[0]?.id ? String(materials[0].id) : "", quantityKg: "" }],
+      });
+    }
+    setFormulaOpen(true);
+  };
+
+  const saveFormula = async () => {
+    const yieldKg = Number(formula.yieldKg.replace(",", "."));
+    const items = formula.items.map((item) => ({ materialId: Number(item.materialId), quantityKg: Number(item.quantityKg.replace(",", ".")) }));
+    const selectedProduct = productCatalog.find((item) => item.code === formula.productCode);
+    if (!selectedProduct || !formula.name.trim() || yieldKg <= 0 || items.length === 0 || items.some((item) => !item.materialId || item.quantityKg <= 0)) {
+      setFormulaError("Elegí el producto terminado, indicá el rendimiento y completá todas las materias primas.");
+      return;
+    }
+    if (new Set(items.map((item) => item.materialId)).size !== items.length) {
+      setFormulaError("No repitas la misma materia prima dentro de una fórmula.");
+      return;
+    }
+    setSavingFormula(true); setFormulaError("");
+    try {
+      const response = await fetch("/api/operations", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "save-recipe", recipe: { id: formula.id, productCode: formula.productCode, product: selectedProduct, name: formula.name, yieldKg, items } }),
+      });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "No se pudo guardar la fórmula.");
+      await loadCostData();
+      setFormulaOpen(false);
+    } catch (saveError) {
+      setFormulaError(saveError instanceof Error ? saveError.message : "No se pudo guardar la fórmula.");
+    } finally { setSavingFormula(false); }
+  };
+
   return (
     <section className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -2423,7 +2637,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
         </div>
       </>}
 
-      {tab === "compras" && <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="flex flex-col gap-3 border-b p-5 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xl font-black">Facturas de compra</h3><p className="text-sm text-muted-foreground">Una carga por factura, con todos sus productos, IVA y condición de pago.</p></div><div className="relative w-full sm:w-72"><Search className="absolute left-3 top-3 size-4 text-muted-foreground"/><Input className="pl-9" placeholder="Buscar factura o proveedor" /></div></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Fecha / comprobante</TableHead><TableHead>Proveedor</TableHead><TableHead>Centro</TableHead><TableHead className="text-right">Neto</TableHead><TableHead className="text-right">IVA</TableHead><TableHead className="text-right">Total factura</TableHead><TableHead>Pago</TableHead></TableRow></TableHeader><TableBody>{purchases.map((row, index) => <TableRow key={`${row.date}-${index}`}><TableCell className="whitespace-nowrap"><b>{row.invoice}</b><div className="text-xs text-muted-foreground">{row.date}</div></TableCell><TableCell><b>{row.supplier}</b><div className="text-xs text-muted-foreground">{row.detail}</div></TableCell><TableCell><Badge variant="outline">{row.center}</Badge></TableCell><TableCell className="text-right">{money(row.net)}</TableCell><TableCell className="text-right">{money(row.tax)}</TableCell><TableCell className="text-right font-black">{money(row.total)}</TableCell><TableCell><Badge className={row.status === "Pagado" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}>{row.status}</Badge></TableCell></TableRow>)}</TableBody></Table></div></div>}
+      {tab === "compras" && <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="flex flex-col gap-3 border-b p-5 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xl font-black">Facturas de compra</h3><p className="text-sm text-muted-foreground">Una carga por factura, con todos sus productos, IVA y condición de pago.</p></div><div className="relative w-full sm:w-72"><Search className="absolute left-3 top-3 size-4 text-muted-foreground"/><Input value={purchaseQuery} onChange={(e)=>setPurchaseQuery(e.target.value)} className="pl-9" placeholder="Buscar factura o proveedor" /></div></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Fecha / comprobante</TableHead><TableHead>Proveedor</TableHead><TableHead>Centro</TableHead><TableHead className="text-right">Neto</TableHead><TableHead className="text-right">IVA</TableHead><TableHead className="text-right">Total factura</TableHead><TableHead>Pago</TableHead></TableRow></TableHeader><TableBody>{filteredPurchases.length === 0 && <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">{purchaseQuery ? "No hay facturas que coincidan con la búsqueda." : "Todavía no hay facturas cargadas."}</TableCell></TableRow>}{filteredPurchases.map((row) => <TableRow key={row.id}><TableCell className="whitespace-nowrap"><b>{row.invoice}</b><div className="text-xs text-muted-foreground">{row.date}</div></TableCell><TableCell><b>{row.supplier}</b><div className="text-xs text-muted-foreground">{row.detail}</div></TableCell><TableCell><Badge variant="outline">{row.center}</Badge></TableCell><TableCell className="text-right">{money(row.net)}</TableCell><TableCell className="text-right">{money(row.tax)}</TableCell><TableCell className="text-right font-black">{money(row.total)}</TableCell><TableCell><Badge className={row.status === "Pagado" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}>{row.status}</Badge></TableCell></TableRow>)}</TableBody></Table></div></div>}
 
       {tab === "gastos" && <div className="space-y-5">
         <div className="flex flex-col gap-4 rounded-3xl border bg-white p-6 shadow-sm sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xl font-black">Gastos generales</h3><p className="text-sm text-muted-foreground">Servicios, alquileres, sueldos y otros costos que alimentan el Estado de resultados.</p></div><Button onClick={() => setExpenseOpen(true)} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Nuevo gasto</Button></div>
@@ -2434,29 +2648,33 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
 
       {tab === "iva" && <div className="space-y-5"><div className="flex flex-col gap-4 rounded-3xl border bg-white p-6 shadow-sm sm:flex-row sm:items-center sm:justify-between"><div><Badge className="bg-blue-100 text-blue-700">Octubre 2026</Badge><h3 className="mt-3 text-2xl font-black">IVA crédito fiscal</h3><p className="text-sm text-muted-foreground">IVA pagado en compras computables durante el mes.</p></div><label className="text-sm font-bold">Período<select className="ml-3 h-9 rounded-md border bg-transparent px-3 font-normal"><option>Octubre 2026</option><option>Septiembre 2026</option><option>Agosto 2026</option></select></label></div><div className="grid gap-4 sm:grid-cols-3"><div className="rounded-3xl border bg-white p-5 shadow-sm"><p className="text-sm font-bold text-muted-foreground">IVA 21%</p><p className="mt-2 text-3xl font-black text-blue-700">{money(monthlyVat21)}</p><p className="mt-2 text-xs text-muted-foreground">Facturas y productos gravados al 21%</p></div><div className="rounded-3xl border bg-white p-5 shadow-sm"><p className="text-sm font-bold text-muted-foreground">IVA 10,5%</p><p className="mt-2 text-3xl font-black text-sky-600">{money(monthlyVat105)}</p><p className="mt-2 text-xs text-muted-foreground">Facturas y productos gravados al 10,5%</p></div><div className="rounded-3xl bg-[#3b2931] p-5 text-white shadow-sm"><p className="text-sm font-bold text-white/70">Crédito fiscal total</p><p className="mt-2 text-3xl font-black">{money(monthlyVat21 + monthlyVat105)}</p><p className="mt-2 text-xs text-white/60">Acumulado automático del período</p></div></div><div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="border-b p-5"><h3 className="text-xl font-black">Detalle por comprobante</h3><p className="text-sm text-muted-foreground">Sólo se incluyen facturas de proveedores configurados con IVA.</p></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Fecha</TableHead><TableHead>Comprobante</TableHead><TableHead>Proveedor</TableHead><TableHead>Centro</TableHead><TableHead className="text-right">Neto gravado</TableHead><TableHead className="text-right">IVA 21%</TableHead><TableHead className="text-right">IVA 10,5%</TableHead><TableHead className="text-right">Crédito fiscal</TableHead></TableRow></TableHeader><TableBody>{purchases.filter(row=>row.tax>0).map((row,index)=><TableRow key={index}><TableCell>{row.date}</TableCell><TableCell className="font-bold">{row.invoice}</TableCell><TableCell>{row.supplier}</TableCell><TableCell><Badge variant="outline">{row.center}</Badge></TableCell><TableCell className="text-right">{money(row.net)}</TableCell><TableCell className="text-right">{row.vat21 ? money(row.vat21) : "—"}</TableCell><TableCell className="text-right">{row.vat105 ? money(row.vat105) : "—"}</TableCell><TableCell className="text-right font-black text-blue-700">{money(row.tax)}</TableCell></TableRow>)}</TableBody></Table></div><div className="flex justify-between border-t bg-blue-50 px-5 py-4 font-black"><span>Total crédito fiscal del mes</span><span className="text-blue-700">{money(monthlyVat21 + monthlyVat105)}</span></div></div><div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><b>Importante:</b> los cálculos sirven para control interno. El crédito fiscal definitivo debe validarse con los comprobantes y la liquidación del contador.</div></div>}
 
-      {tab === "pagos" && <div className="space-y-5"><div className="flex flex-col gap-4 rounded-3xl border bg-white p-6 shadow-sm sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xl font-black">Pagos a proveedores</h3><p className="text-sm text-muted-foreground">Cada pago descuenta el saldo de la cuenta corriente seleccionada.</p></div><Button onClick={() => setPaymentOpen(true)} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Registrar pago</Button></div><div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><Table><TableHeader><TableRow><TableHead>Fecha</TableHead><TableHead>Proveedor</TableHead><TableHead>Forma de pago</TableHead><TableHead>Referencia</TableHead><TableHead>Observación</TableHead><TableHead className="text-right">Importe</TableHead></TableRow></TableHeader><TableBody>{payments.map((row,index)=><TableRow key={`${row.date}-${index}`}><TableCell>{row.date}</TableCell><TableCell className="font-bold">{row.supplier}</TableCell><TableCell><Badge variant="outline">{row.method}</Badge></TableCell><TableCell>{row.reference}</TableCell><TableCell className="text-muted-foreground">{row.note}</TableCell><TableCell className="text-right font-black text-emerald-700">− {money(row.amount)}</TableCell></TableRow>)}</TableBody></Table></div></div>}
+      {tab === "pagos" && <div className="space-y-5"><div className="flex flex-col gap-4 rounded-3xl border bg-white p-6 shadow-sm sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xl font-black">Pagos a proveedores</h3><p className="text-sm text-muted-foreground">Cada pago descuenta el saldo de la cuenta corriente seleccionada.</p></div><Button onClick={() => setPaymentOpen(true)} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Registrar pago</Button></div><div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><Table><TableHeader><TableRow><TableHead>Fecha</TableHead><TableHead>Proveedor</TableHead><TableHead>Forma de pago</TableHead><TableHead>Referencia</TableHead><TableHead>Observación</TableHead><TableHead className="text-right">Importe</TableHead></TableRow></TableHeader><TableBody>{payments.length === 0 && <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">Todavía no hay pagos registrados.</TableCell></TableRow>}{payments.map((row)=><TableRow key={row.id}><TableCell>{row.date}</TableCell><TableCell className="font-bold">{row.supplier}</TableCell><TableCell><Badge variant="outline">{row.method}</Badge></TableCell><TableCell>{row.reference}</TableCell><TableCell className="text-muted-foreground">{row.note}</TableCell><TableCell className="text-right font-black text-emerald-700">− {money(row.amount)}</TableCell></TableRow>)}</TableBody></Table></div></div>}
 
-      {tab === "proveedores" && <div className="space-y-5"><div className="flex justify-end"><Button className="rounded-xl bg-[#3b2931] text-white"><Plus /> Nuevo proveedor</Button></div><div className="grid gap-5 lg:grid-cols-3">{supplierProfiles.slice(0,3).map(({name, taxMode, debt, invoices, date}) => <div key={name} className="rounded-3xl border bg-white p-6 shadow-sm"><div className="flex items-start justify-between"><div className="grid size-11 place-items-center rounded-2xl bg-[#f8dce7] font-black text-[#a53d67]">{name.slice(0,2).toUpperCase()}</div><div className="flex flex-col items-end gap-2"><Badge variant="outline">{debt ? "Saldo pendiente" : "Sin deuda"}</Badge><Badge className={taxMode === "Con IVA" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-700"}>{taxMode}</Badge></div></div><h3 className="mt-5 text-xl font-black">{name}</h3><p className="mt-1 text-sm text-muted-foreground">Última compra {date}</p><div className="mt-5 border-t pt-4"><p className="text-xs font-semibold uppercase text-muted-foreground">Saldo actual</p><p className={`mt-1 text-2xl font-black ${debt < 0 ? "text-emerald-700" : debt > 0 ? "text-rose-700" : ""}`}>{money(debt)}</p><p className="mt-1 text-xs text-muted-foreground">{debt > 0 ? "Münna debe al proveedor" : debt < 0 ? "Saldo a favor de Münna" : invoices}</p></div><Button variant="ghost" className="mt-4 w-full justify-between">Ver cuenta corriente <ChevronRight className="size-4"/></Button></div>)}</div><div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="flex flex-col gap-3 border-b p-5 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xl font-black">Cuenta corriente · Vacalin</h3><p className="text-sm text-muted-foreground">Facturas suman deuda; pagos y notas de crédito la descuentan.</p></div><div className="text-right"><p className="text-xs font-bold uppercase text-muted-foreground">Saldo actual</p><p className="text-2xl font-black text-rose-700">{money(3258040)}</p></div></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Fecha</TableHead><TableHead>Movimiento</TableHead><TableHead className="text-right">Debe (+)</TableHead><TableHead className="text-right">Haber (−)</TableHead><TableHead className="text-right">Saldo</TableHead></TableRow></TableHeader><TableBody>{vacalinLedger.map((row,index)=><TableRow key={index}><TableCell>{row.date}</TableCell><TableCell className="font-medium">{row.detail}</TableCell><TableCell className="text-right text-rose-700">{row.debit ? money(row.debit) : "—"}</TableCell><TableCell className="text-right text-emerald-700">{row.credit ? money(row.credit) : "—"}</TableCell><TableCell className={`text-right font-black ${row.balance < 0 ? "text-emerald-700" : row.balance > 0 ? "text-rose-700" : ""}`}>{money(row.balance)}</TableCell></TableRow>)}</TableBody></Table></div><div className="border-t bg-[#faf7f8] px-5 py-3 text-xs text-muted-foreground">Saldo positivo: Münna debe al proveedor · Saldo negativo: queda dinero a favor de Münna.</div></div></div>}
+      {tab === "proveedores" && <div className="space-y-5"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xl font-black">Proveedores</h3><p className="text-sm text-muted-foreground">Altas, condición fiscal y cuenta corriente real.</p></div><Button onClick={() => { setSupplierError(""); setSupplierOpen(true); }} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Nuevo proveedor</Button></div>{suppliers.length === 0 && <div className="rounded-3xl border border-dashed bg-white p-10 text-center text-muted-foreground">Todavía no hay proveedores cargados.</div>}<div className="grid gap-5 lg:grid-cols-3">{suppliers.map(({name, taxMode, debt, invoices, date}) => <div key={name} className={`rounded-3xl border bg-white p-6 shadow-sm ${selectedSupplierName === name ? "ring-2 ring-[#c45c82]" : ""}`}><div className="flex items-start justify-between"><div className="grid size-11 place-items-center rounded-2xl bg-[#f8dce7] font-black text-[#a53d67]">{name.slice(0,2).toUpperCase()}</div><div className="flex flex-col items-end gap-2"><Badge variant="outline">{debt ? "Saldo pendiente" : "Sin deuda"}</Badge><Badge className={taxMode === "Con IVA" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-700"}>{taxMode}</Badge></div></div><h3 className="mt-5 text-xl font-black">{name}</h3><p className="mt-1 text-sm text-muted-foreground">Última compra {date}</p><div className="mt-5 border-t pt-4"><p className="text-xs font-semibold uppercase text-muted-foreground">Saldo actual</p><p className={`mt-1 text-2xl font-black ${debt < 0 ? "text-emerald-700" : debt > 0 ? "text-rose-700" : ""}`}>{money(debt)}</p><p className="mt-1 text-xs text-muted-foreground">{debt > 0 ? "Münna debe al proveedor" : debt < 0 ? "Saldo a favor de Münna" : invoices}</p></div><Button onClick={() => setSelectedSupplierName(name)} variant="ghost" className="mt-4 w-full justify-between">Ver cuenta corriente <ChevronRight className="size-4"/></Button></div>)}</div>{selectedSupplier && <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="flex flex-col gap-3 border-b p-5 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xl font-black">Cuenta corriente · {selectedSupplier.name}</h3><p className="text-sm text-muted-foreground">Las facturas a cuenta suman deuda y los pagos la descuentan.</p></div><div className="text-right"><p className="text-xs font-bold uppercase text-muted-foreground">Saldo actual</p><p className={`text-2xl font-black ${selectedSupplier.debt < 0 ? "text-emerald-700" : selectedSupplier.debt > 0 ? "text-rose-700" : ""}`}>{money(selectedSupplier.debt)}</p></div></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Fecha</TableHead><TableHead>Movimiento</TableHead><TableHead className="text-right">Debe (+)</TableHead><TableHead className="text-right">Haber (−)</TableHead><TableHead className="text-right">Saldo</TableHead></TableRow></TableHeader><TableBody>{supplierLedger.length === 0 && <TableRow><TableCell colSpan={5} className="py-10 text-center text-muted-foreground">Este proveedor todavía no tiene movimientos.</TableCell></TableRow>}{supplierLedger.map((row,index)=><TableRow key={`${row.dateKey}-${index}`}><TableCell>{row.date}</TableCell><TableCell className="font-medium">{row.detail}</TableCell><TableCell className="text-right text-rose-700">{row.debit ? money(row.debit) : "—"}</TableCell><TableCell className="text-right text-emerald-700">{row.credit ? money(row.credit) : "—"}</TableCell><TableCell className={`text-right font-black ${row.balance < 0 ? "text-emerald-700" : row.balance > 0 ? "text-rose-700" : ""}`}>{money(row.balance)}</TableCell></TableRow>)}</TableBody></Table></div><div className="border-t bg-[#faf7f8] px-5 py-3 text-xs text-muted-foreground">Saldo positivo: Münna debe al proveedor · Saldo negativo: queda dinero a favor de Münna.</div></div>}</div>}
 
       {tab === "materias" && <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="flex flex-col gap-3 border-b p-5 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xl font-black">Materias primas</h3><p className="text-sm text-muted-foreground">Cada producto queda vinculado a su proveedor, presentación, unidad e IVA.</p></div><Button onClick={() => { setMaterialError(""); setMaterialOpen(true); }} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Nueva materia prima</Button></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Materia prima</TableHead><TableHead>Proveedor</TableHead><TableHead>Contenido por envase</TableHead><TableHead>IVA</TableHead><TableHead>Última compra</TableHead><TableHead className="text-right">Último costo unitario</TableHead><TableHead className="text-right">Variación</TableHead></TableRow></TableHeader><TableBody>{materials.length === 0 && <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">Todavía no hay materias primas cargadas.</TableCell></TableRow>}{materials.map(row => { const variation = row.previous > 0 && row.cost > 0 ? (row.cost / row.previous - 1) * 100 : null; return <TableRow key={row.id ?? `${row.supplier}-${row.name}`}><TableCell><b>{row.name}</b><div className="text-xs text-muted-foreground">{row.supplierDescription && row.supplierDescription !== row.name ? row.supplierDescription : `Costo por ${row.unit}`}</div></TableCell><TableCell>{row.supplier}</TableCell><TableCell>{row.pack}</TableCell><TableCell><Badge variant="outline">{String(row.vat).replace(".", ",")}%</Badge></TableCell><TableCell>{row.date}</TableCell><TableCell className="text-right font-black">{row.cost > 0 ? money(row.cost) : "Sin compras"}</TableCell><TableCell className="text-right">{variation == null ? <Badge variant="outline">Sin historial</Badge> : <Badge className={variation > 0 ? "bg-rose-100 text-rose-700" : variation < 0 ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-700"}>{variation > 0 ? "+" : ""}{variation.toFixed(1)}%</Badge>}</TableCell></TableRow>})}</TableBody></Table></div></div>}
 
-      {tab === "formulas" && <div className="space-y-4"><div className="rounded-3xl border bg-white p-6 shadow-sm"><div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xl font-black">Fórmulas de sabores</h3><p className="text-sm text-muted-foreground">El costo se recalcula con el último precio de cada ingrediente.</p></div><Button className="rounded-xl bg-[#3b2931] text-white"><Plus /> Nueva fórmula</Button></div></div><div className="grid gap-4 lg:grid-cols-2">{flavorCosts.map(row => <div key={row.name} className="rounded-3xl border bg-white p-6 shadow-sm"><div className="flex items-start justify-between"><div><Badge variant="outline">Receta · {row.batch}</Badge><h3 className="mt-3 text-xl font-black">{row.name}</h3><p className="mt-1 text-sm text-muted-foreground">{row.ingredients} ingredientes · actualizado {row.updated}</p></div><FlaskConical className="size-7 text-[#b74e76]"/></div><div className="mt-6 grid grid-cols-2 gap-3"><div className="rounded-2xl bg-[#fff3f7] p-4"><p className="text-xs font-semibold text-muted-foreground">Costo receta</p><p className="mt-1 text-lg font-black">{money(row.recipe)}</p></div><div className="rounded-2xl bg-[#f5f3f4] p-4"><p className="text-xs font-semibold text-muted-foreground">Costo por kg</p><p className="mt-1 text-lg font-black">{money(row.perKg)}</p></div></div><Button variant="ghost" className="mt-4 w-full justify-between">Abrir fórmula <ChevronRight className="size-4"/></Button></div>)}</div></div>}
+      {tab === "formulas" && <div className="space-y-4"><div className="rounded-3xl border bg-white p-6 shadow-sm"><div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xl font-black">Fórmulas de productos</h3><p className="text-sm text-muted-foreground">Asigná las materias primas y la cantidad usada en cada elaboración. El costo se recalcula con la última compra.</p></div><Button onClick={() => openFormula()} disabled={materials.filter((item)=>item.id != null).length === 0} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Nueva fórmula</Button></div>{materials.filter((item)=>item.id != null).length === 0 && <p className="mt-4 rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-800">Primero cargá al menos una materia prima para poder crear fórmulas.</p>}</div>{formulas.length === 0 && <div className="rounded-3xl border border-dashed bg-white p-10 text-center text-muted-foreground">Todavía no hay fórmulas cargadas.</div>}<div className="grid gap-4 lg:grid-cols-2">{formulas.map(row => <div key={row.id} className="rounded-3xl border bg-white p-6 shadow-sm"><div className="flex items-start justify-between"><div><Badge variant="outline">Receta · {row.batch}</Badge><h3 className="mt-3 text-xl font-black">{row.name}</h3><p className="mt-1 text-sm text-muted-foreground">{row.productCode} · {row.ingredients} ingredientes · actualizado {row.updated}</p></div><FlaskConical className="size-7 text-[#b74e76]"/></div><div className="mt-6 grid grid-cols-2 gap-3"><div className="rounded-2xl bg-[#fff3f7] p-4"><p className="text-xs font-semibold text-muted-foreground">Costo receta</p><p className="mt-1 text-lg font-black">{money(row.recipe)}</p></div><div className="rounded-2xl bg-[#f5f3f4] p-4"><p className="text-xs font-semibold text-muted-foreground">Costo por kg</p><p className="mt-1 text-lg font-black">{money(row.perKg)}</p></div></div><Button onClick={() => openFormula(row)} variant="ghost" className="mt-4 w-full justify-between">Abrir fórmula <ChevronRight className="size-4"/></Button></div>)}</div></div>}
 
-      <Dialog open={materialOpen} onOpenChange={setMaterialOpen}><DialogContent className="sm:max-w-[680px]"><DialogHeader><DialogTitle>Nueva materia prima</DialogTitle><DialogDescription>Creá el producto una sola vez. Después aparecerá para cargar facturas y armar fórmulas.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold sm:col-span-2">Nombre de la materia prima<Input value={material.name} onChange={(e)=>setMaterial({...material,name:e.target.value})} placeholder="Ej. Pasta de pistacho"/></label><label className="space-y-2 text-sm font-bold">Proveedor<Input list="material-suppliers" value={material.supplier} onChange={(e)=>setMaterial({...material,supplier:e.target.value})} placeholder="Escribí o elegí un proveedor"/><datalist id="material-suppliers">{Array.from(new Set([...supplierProfiles.map(item=>item.name), ...materials.map(item=>item.supplier)])).map(name=><option key={name} value={name}/>)}</datalist></label><label className="space-y-2 text-sm font-bold">Nombre en la factura <span className="font-normal text-muted-foreground">(opcional)</span><Input value={material.supplierDescription} onChange={(e)=>setMaterial({...material,supplierDescription:e.target.value})} placeholder="Como figura para ese proveedor"/></label><label className="space-y-2 text-sm font-bold">Unidad de costo<select value={material.unit} onChange={(e)=>setMaterial({...material,unit:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option value="kg">Kilogramo</option><option value="unidad">Unidad</option></select></label><label className="space-y-2 text-sm font-bold">Contenido por envase<Input value={material.contentPerPackage} onChange={(e)=>setMaterial({...material,contentPerPackage:e.target.value})} inputMode="decimal" placeholder="Ej. 10"/><span className="block text-xs font-normal text-muted-foreground">Cuántos kg o unidades trae cada bolsa, caja o balde.</span></label><label className="space-y-2 text-sm font-bold sm:col-span-2">IVA<select value={material.vat} onChange={(e)=>setMaterial({...material,vat:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option value="21">21%</option><option value="10.5">10,5%</option><option value="0">0%</option></select></label></div>{materialError && <p className="text-sm font-bold text-red-600">{materialError}</p>}<DialogFooter><Button variant="outline" onClick={()=>setMaterialOpen(false)}>Cancelar</Button><Button disabled={savingMaterial} onClick={saveMaterial} className="bg-[#3b2931] text-white">{savingMaterial ? "Guardando…" : "Guardar materia prima"}</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={supplierOpen} onOpenChange={setSupplierOpen}><DialogContent className="sm:max-w-[620px]"><DialogHeader><DialogTitle>Nuevo proveedor</DialogTitle><DialogDescription>El proveedor quedará disponible para materias primas, facturas, pagos y cuenta corriente.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold sm:col-span-2">Nombre o razón social<Input value={supplier.name} onChange={(e)=>setSupplier({...supplier,name:e.target.value})} placeholder="Ej. Vacalin"/></label><label className="space-y-2 text-sm font-bold">Condición de IVA<select value={supplier.taxMode} onChange={(e)=>setSupplier({...supplier,taxMode:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option value="con_iva">Con IVA</option><option value="sin_iva">Sin IVA</option><option value="revisar">Revisar</option></select></label><label className="space-y-2 text-sm font-bold">Categoría<Input value={supplier.category} onChange={(e)=>setSupplier({...supplier,category:e.target.value})} placeholder="Ej. Materia prima"/></label></div>{supplierError && <p className="text-sm font-bold text-red-600">{supplierError}</p>}<DialogFooter><Button variant="outline" onClick={()=>setSupplierOpen(false)}>Cancelar</Button><Button disabled={savingSupplier} onClick={saveSupplier} className="bg-[#3b2931] text-white">{savingSupplier ? "Guardando…" : "Guardar proveedor"}</Button></DialogFooter></DialogContent></Dialog>
+
+      <Dialog open={formulaOpen} onOpenChange={setFormulaOpen}><DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-[820px]"><DialogHeader><DialogTitle>{formula.id ? "Editar fórmula" : "Nueva fórmula"}</DialogTitle><DialogDescription>Seleccioná el producto elaborado y detallá cuánto lleva de cada materia prima por receta.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-3"><label className="space-y-2 text-sm font-bold">Código del producto<Input list="formula-products" value={formula.productCode} onChange={(e)=>{ const product=productCatalog.find(item=>item.code===e.target.value); setFormula({...formula,productCode:e.target.value,name:product?.name ?? formula.name}); }} placeholder="Escribí código o buscá"/><datalist id="formula-products">{productCatalog.map(item=><option key={item.code} value={item.code}>{item.name}</option>)}</datalist></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Producto / nombre de la fórmula<Input value={formula.name} onChange={(e)=>setFormula({...formula,name:e.target.value})} placeholder="Ej. Pistacho B.G.Eco"/></label><label className="space-y-2 text-sm font-bold">Rendimiento total de la receta<Input value={formula.yieldKg} onChange={(e)=>setFormula({...formula,yieldKg:e.target.value})} inputMode="decimal" placeholder="60"/><span className="block text-xs font-normal text-muted-foreground">Kilogramos finales elaborados.</span></label><div className="rounded-2xl bg-[#fff3f7] p-4 sm:col-span-2"><p className="text-xs font-bold uppercase text-muted-foreground">Costo calculado</p><div className="mt-2 flex flex-wrap gap-6"><div><b className="text-lg">{money(formulaCost)}</b><p className="text-xs text-muted-foreground">Receta completa</p></div><div><b className="text-lg">{money(formulaYield > 0 ? formulaCost / formulaYield : 0)}</b><p className="text-xs text-muted-foreground">Por kg elaborado</p></div></div></div></div><div className="space-y-3"><div className="flex items-center justify-between"><h4 className="font-black">Materias primas de la fórmula</h4><Button type="button" variant="outline" size="sm" onClick={()=>setFormula({...formula,items:[...formula.items,{materialId:materials[0]?.id ? String(materials[0].id) : "",quantityKg:""}]})}><Plus /> Agregar ingrediente</Button></div>{formula.items.map((item,index)=>{ const selectedMaterial=materials.find(row=>String(row.id)===item.materialId); const quantity=Number(item.quantityKg.replace(",","."))||0; return <div key={index} className="grid gap-3 rounded-2xl border bg-white p-4 sm:grid-cols-[2fr_1fr_1fr_auto]"><label className="space-y-1 text-xs font-bold">Materia prima<select value={item.materialId} onChange={(e)=>setFormula({...formula,items:formula.items.map((row,i)=>i===index?{...row,materialId:e.target.value}:row)})} className="h-10 w-full rounded-md border bg-white px-3 text-sm font-normal"><option value="">Seleccionar…</option>{materials.filter(row=>row.id != null).map(row=><option key={row.id} value={String(row.id)}>{row.name} · {row.supplier}</option>)}</select></label><label className="space-y-1 text-xs font-bold">Cantidad usada<Input value={item.quantityKg} onChange={(e)=>setFormula({...formula,items:formula.items.map((row,i)=>i===index?{...row,quantityKg:e.target.value}:row)})} inputMode="decimal" placeholder="0,000"/><span className="block font-normal text-muted-foreground">{selectedMaterial?.unit ?? "kg o unidades"}</span></label><div className="self-end rounded-xl bg-[#f7f3f5] px-3 py-2 text-right"><p className="text-xs text-muted-foreground">Costo</p><b>{money(quantity * Number(selectedMaterial?.cost ?? 0))}</b></div><Button type="button" variant="ghost" className="self-end text-muted-foreground" disabled={formula.items.length===1} onClick={()=>setFormula({...formula,items:formula.items.filter((_,i)=>i!==index)})}>Quitar</Button></div>})}</div>{formulaError && <p className="text-sm font-bold text-red-600">{formulaError}</p>}<DialogFooter><Button variant="outline" onClick={()=>setFormulaOpen(false)}>Cancelar</Button><Button disabled={savingFormula} onClick={saveFormula} className="bg-[#3b2931] text-white">{savingFormula ? "Guardando…" : "Guardar fórmula"}</Button></DialogFooter></DialogContent></Dialog>
+
+      <Dialog open={materialOpen} onOpenChange={setMaterialOpen}><DialogContent className="sm:max-w-[680px]"><DialogHeader><DialogTitle>Nueva materia prima</DialogTitle><DialogDescription>Creá el producto una sola vez. Después aparecerá para cargar facturas y armar fórmulas.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold sm:col-span-2">Nombre de la materia prima<Input value={material.name} onChange={(e)=>setMaterial({...material,name:e.target.value})} placeholder="Ej. Pasta de pistacho"/></label><label className="space-y-2 text-sm font-bold">Proveedor<Input list="material-suppliers" value={material.supplier} onChange={(e)=>setMaterial({...material,supplier:e.target.value})} placeholder="Escribí o elegí un proveedor"/><datalist id="material-suppliers">{Array.from(new Set([...suppliers.map(item=>item.name), ...materials.map(item=>item.supplier)])).map(name=><option key={name} value={name}/>)}</datalist></label><label className="space-y-2 text-sm font-bold">Nombre en la factura <span className="font-normal text-muted-foreground">(opcional)</span><Input value={material.supplierDescription} onChange={(e)=>setMaterial({...material,supplierDescription:e.target.value})} placeholder="Como figura para ese proveedor"/></label><label className="space-y-2 text-sm font-bold">Unidad de costo<select value={material.unit} onChange={(e)=>setMaterial({...material,unit:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option value="kg">Kilogramo</option><option value="unidad">Unidad</option></select></label><label className="space-y-2 text-sm font-bold">Contenido por envase<Input value={material.contentPerPackage} onChange={(e)=>setMaterial({...material,contentPerPackage:e.target.value})} inputMode="decimal" placeholder="Ej. 10"/><span className="block text-xs font-normal text-muted-foreground">Cuántos kg o unidades trae cada bolsa, caja o balde.</span></label><label className="space-y-2 text-sm font-bold sm:col-span-2">IVA<select value={material.vat} onChange={(e)=>setMaterial({...material,vat:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option value="21">21%</option><option value="10.5">10,5%</option><option value="0">0%</option></select></label></div>{materialError && <p className="text-sm font-bold text-red-600">{materialError}</p>}<DialogFooter><Button variant="outline" onClick={()=>setMaterialOpen(false)}>Cancelar</Button><Button disabled={savingMaterial} onClick={saveMaterial} className="bg-[#3b2931] text-white">{savingMaterial ? "Guardando…" : "Guardar materia prima"}</Button></DialogFooter></DialogContent></Dialog>
 
       <Dialog open={expenseOpen} onOpenChange={setExpenseOpen}><DialogContent className="sm:max-w-[650px]"><DialogHeader><DialogTitle>Registrar gasto general</DialogTitle><DialogDescription>Este gasto se incorporará automáticamente al Estado de resultados del área seleccionada.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold">Fecha<Input type="date" value={expense.expenseDate} onChange={(e) => setExpense({...expense,expenseDate:e.target.value})}/></label><label className="space-y-2 text-sm font-bold">Área / centro de costo<select value={expense.area} onChange={(e) => setExpense({...expense,area:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal">{["Fábrica","Av. de Mayo","Centenario","Administración","Logística"].map(x=><option key={x}>{x}</option>)}</select></label><label className="space-y-2 text-sm font-bold">Categoría<select value={expense.category} onChange={(e)=>setExpense({...expense,category:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal">{expenseCategories.map(x=><option key={x}>{x}</option>)}</select></label><label className="space-y-2 text-sm font-bold">Importe<Input value={expense.amount} onChange={(e)=>setExpense({...expense,amount:e.target.value})} inputMode="numeric" placeholder="$ 0"/></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Concepto<Input value={expense.concept} onChange={(e)=>setExpense({...expense,concept:e.target.value})} placeholder="Ej. Factura de luz octubre"/></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Observaciones<Textarea value={expense.notes} onChange={(e)=>setExpense({...expense,notes:e.target.value})} placeholder="Proveedor, período o detalle adicional"/></label></div>{expenseError && <p className="text-sm font-bold text-red-600">{expenseError}</p>}<DialogFooter><Button variant="outline" onClick={()=>setExpenseOpen(false)}>Cancelar</Button><Button disabled={savingExpense} onClick={saveExpense} className="bg-[#3b2931] text-white">{savingExpense ? "Guardando…" : "Guardar gasto"}</Button></DialogFooter></DialogContent></Dialog>
 
-      <Dialog open={paymentOpen} onOpenChange={setPaymentOpen}><DialogContent className="sm:max-w-[620px]"><DialogHeader><DialogTitle>Registrar pago a proveedor</DialogTitle><DialogDescription>El importe se descuenta de la cuenta corriente del proveedor.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold">Proveedor<select value={payment.supplier} onChange={e=>setPayment({...payment,supplier:e.target.value})} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal">{supplierProfiles.map(item=><option key={item.name}>{item.name}</option>)}</select></label><label className="space-y-2 text-sm font-bold">Fecha<Input type="date" defaultValue="2026-10-13"/></label><label className="space-y-2 text-sm font-bold">Monto pagado<Input value={payment.amount} onChange={e=>setPayment({...payment,amount:e.target.value})} inputMode="numeric" placeholder="$ 0"/></label><label className="space-y-2 text-sm font-bold">Forma de pago<select value={payment.method} onChange={e=>setPayment({...payment,method:e.target.value})} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal">{["Transferencia","Efectivo","Echeq","Cheque de tercero","Mercadería"].map(item=><option key={item}>{item}</option>)}</select></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Referencia o comprobante<Input value={payment.reference} onChange={e=>setPayment({...payment,reference:e.target.value})} placeholder="N.º de transferencia, cheque o recibo"/></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Observaciones<Textarea value={payment.note} onChange={e=>setPayment({...payment,note:e.target.value})} placeholder="Ej. Pago parcial, vencimiento del echeq o detalle de la mercadería entregada"/></label></div><div className="rounded-2xl bg-[#f7f3f5] p-4 text-sm"><div className="flex justify-between"><span>Saldo actual del proveedor</span><b>{money(supplierProfiles.find(item=>item.name===payment.supplier)?.debt ?? 0)}</b></div><div className="mt-2 flex justify-between border-t pt-2"><span>Saldo después del pago</span><b>{money((supplierProfiles.find(item=>item.name===payment.supplier)?.debt ?? 0) - (Number(payment.amount.replace(/\D/g,"")) || 0))}</b></div></div><DialogFooter><Button variant="outline" onClick={()=>setPaymentOpen(false)}>Cancelar</Button><Button onClick={savePayment} className="bg-[#3b2931] text-white">Registrar pago</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={paymentOpen} onOpenChange={setPaymentOpen}><DialogContent className="sm:max-w-[620px]"><DialogHeader><DialogTitle>Registrar pago a proveedor</DialogTitle><DialogDescription>El importe se descuenta de la cuenta corriente del proveedor.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold">Proveedor<select value={payment.supplier} onChange={e=>setPayment({...payment,supplier:e.target.value})} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal">{suppliers.map(item=><option key={item.name}>{item.name}</option>)}</select></label><label className="space-y-2 text-sm font-bold">Fecha<Input type="date" value={payment.paymentDate} onChange={(e)=>setPayment({...payment,paymentDate:e.target.value})}/></label><label className="space-y-2 text-sm font-bold">Monto pagado<Input value={payment.amount} onChange={e=>setPayment({...payment,amount:e.target.value})} inputMode="numeric" placeholder="$ 0"/></label><label className="space-y-2 text-sm font-bold">Forma de pago<select value={payment.method} onChange={e=>setPayment({...payment,method:e.target.value})} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal">{["Transferencia","Efectivo","Echeq","Cheque de tercero","Mercadería"].map(item=><option key={item}>{item}</option>)}</select></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Referencia o comprobante<Input value={payment.reference} onChange={e=>setPayment({...payment,reference:e.target.value})} placeholder="N.º de transferencia, cheque o recibo"/></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Observaciones<Textarea value={payment.note} onChange={e=>setPayment({...payment,note:e.target.value})} placeholder="Ej. Pago parcial, vencimiento del echeq o detalle de la mercadería entregada"/></label></div><div className="rounded-2xl bg-[#f7f3f5] p-4 text-sm"><div className="flex justify-between"><span>Saldo actual del proveedor</span><b>{money(suppliers.find(item=>item.name===payment.supplier)?.debt ?? 0)}</b></div><div className="mt-2 flex justify-between border-t pt-2"><span>Saldo después del pago</span><b>{money((suppliers.find(item=>item.name===payment.supplier)?.debt ?? 0) - (Number(payment.amount.replace(/\D/g,"")) || 0))}</b></div></div>{paymentError && <p className="text-sm font-bold text-red-600">{paymentError}</p>}<DialogFooter><Button variant="outline" onClick={()=>setPaymentOpen(false)}>Cancelar</Button><Button disabled={savingPayment} onClick={savePayment} className="bg-[#3b2931] text-white">{savingPayment ? "Guardando…" : "Registrar pago"}</Button></DialogFooter></DialogContent></Dialog>
 
       <Dialog open={purchaseOpen} onOpenChange={setPurchaseOpen}><DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-[820px]"><DialogHeader><DialogTitle>Cargar factura de compra</DialogTitle><DialogDescription>Seleccioná el proveedor y agregá los productos incluidos en el comprobante.</DialogDescription></DialogHeader>
         <div className="grid gap-4 py-2 sm:grid-cols-2 lg:grid-cols-4">
-          <label className="space-y-2 text-sm font-bold lg:col-span-2">Proveedor<select value={purchase.supplier} onChange={e => setPurchase({...purchase, supplier:e.target.value})} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal">{supplierProfiles.map(x=><option key={x.name}>{x.name}</option>)}</select></label>
-          <label className="space-y-2 text-sm font-bold">Fecha<Input type="date" defaultValue="2026-10-13"/></label>
+          <label className="space-y-2 text-sm font-bold lg:col-span-2">Proveedor<select value={purchase.supplier} onChange={e => { const supplierName=e.target.value; const firstProduct=materials.find(item=>item.supplier===supplierName)?.name ?? ""; setPurchase({...purchase,supplier:supplierName}); setInvoiceLines(lines=>lines.map((line,index)=>index===0?{...line,product:firstProduct}:line)); }} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal"><option value="">Seleccionar…</option>{suppliers.map(x=><option key={x.name}>{x.name}</option>)}</select></label>
+          <label className="space-y-2 text-sm font-bold">Fecha<Input type="date" value={purchase.invoiceDate} onChange={(e)=>setPurchase({...purchase,invoiceDate:e.target.value})}/></label>
           <label className="space-y-2 text-sm font-bold">N.º de factura<Input value={purchase.invoice} onChange={e => setPurchase({...purchase, invoice:e.target.value})} placeholder="FC A 0001-00001"/></label>
           <div className="rounded-2xl border bg-[#fff7fa] p-4 sm:col-span-2 lg:col-span-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-bold uppercase text-muted-foreground">Condición del proveedor</p><p className="font-black">{activeSupplier.name}</p></div><Badge className={activeSupplier.taxMode === "Con IVA" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-700"}>{activeSupplier.taxMode}</Badge></div><p className="mt-2 text-xs text-muted-foreground">{activeSupplier.taxMode === "Con IVA" ? "El IVA se calcula automáticamente según la alícuota del perfil de cada producto." : "No se agrega IVA: el precio cargado se toma como costo final."}</p></div>
         </div>
-        <div className="space-y-3"><div className="flex items-center justify-between"><h4 className="font-black">Productos de la factura</h4><Button variant="outline" size="sm" onClick={() => setInvoiceLines(lines => [...lines, { product: materials[0].name, quantity: "1", price: "" }])}><Plus /> Agregar producto</Button></div>
-          {invoiceLines.map((line, index) => { const profile = materials.find(item => item.name === line.product) ?? materials[0]; const subtotal = (Number(line.quantity.replace(",", ".")) || 0) * (Number(line.price.replace(/\D/g, "")) || 0); return <div key={index} className="grid gap-3 rounded-2xl border bg-white p-4 sm:grid-cols-[2fr_.65fr_1fr_auto]"><label className="space-y-1 text-xs font-bold">Producto<select value={line.product} onChange={e => setInvoiceLines(lines => lines.map((item, i) => i === index ? {...item, product:e.target.value} : item))} className="h-9 w-full rounded-md border bg-transparent px-3 text-sm font-normal">{materials.filter(item => item.supplier === purchase.supplier || purchase.supplier === "Proveedor informal").map(item=><option key={item.name}>{item.name}</option>)}</select><span className="block font-normal text-muted-foreground">{profile.pack} · IVA {String(profile.vat).replace(".", ",")}%</span></label><label className="space-y-1 text-xs font-bold">Cantidad<Input value={line.quantity} onChange={e => setInvoiceLines(lines => lines.map((item, i) => i === index ? {...item, quantity:e.target.value} : item))}/></label><label className="space-y-1 text-xs font-bold">Precio por unidad<Input value={line.price} onChange={e => setInvoiceLines(lines => lines.map((item, i) => i === index ? {...item, price:e.target.value} : item))} placeholder="$ 0" inputMode="numeric"/><span className="block text-right font-normal text-muted-foreground">Subtotal {money(subtotal)}</span></label><Button variant="ghost" className="self-center text-muted-foreground" disabled={invoiceLines.length === 1} onClick={() => setInvoiceLines(lines => lines.filter((_, i) => i !== index))}>Quitar</Button></div>})}
+        <div className="space-y-3"><div className="flex items-center justify-between"><h4 className="font-black">Productos de la factura</h4><Button variant="outline" size="sm" disabled={!materials.some(item=>item.supplier===purchase.supplier)} onClick={() => setInvoiceLines(lines => [...lines, { product: materials.find(item=>item.supplier===purchase.supplier)?.name ?? "", quantity: "1", price: "" }])}><Plus /> Agregar producto</Button></div>
+          {invoiceLines.map((line, index) => { const profile = materials.find(item => item.name === line.product); const subtotal = (Number(line.quantity.replace(",", ".")) || 0) * (Number(line.price.replace(/\D/g, "")) || 0); return <div key={index} className="grid gap-3 rounded-2xl border bg-white p-4 sm:grid-cols-[2fr_.65fr_1fr_auto]"><label className="space-y-1 text-xs font-bold">Producto<Input list={`purchase-products-${index}`} value={line.product} onChange={e => setInvoiceLines(lines => lines.map((item, i) => i === index ? {...item, product:e.target.value} : item))} placeholder="Escribí para buscar…"/><datalist id={`purchase-products-${index}`}>{materials.filter(item => item.supplier === purchase.supplier).map(item=><option key={item.id ?? item.name} value={item.name}/>)}</datalist><span className="block font-normal text-muted-foreground">{profile ? `${profile.pack} · IVA ${String(profile.vat).replace(".", ",")}%` : "Creá o seleccioná una materia prima de este proveedor."}</span></label><label className="space-y-1 text-xs font-bold">Cantidad<Input value={line.quantity} onChange={e => setInvoiceLines(lines => lines.map((item, i) => i === index ? {...item, quantity:e.target.value} : item))}/></label><label className="space-y-1 text-xs font-bold">Precio por unidad<Input value={line.price} onChange={e => setInvoiceLines(lines => lines.map((item, i) => i === index ? {...item, price:e.target.value} : item))} placeholder="$ 0" inputMode="numeric"/><span className="block text-right font-normal text-muted-foreground">Subtotal {money(subtotal)}</span></label><Button variant="ghost" className="self-center text-muted-foreground" disabled={invoiceLines.length === 1} onClick={() => setInvoiceLines(lines => lines.filter((_, i) => i !== index))}>Quitar</Button></div>})}
         </div>
         <div className="mt-2 grid gap-4 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold">Centro de costo<select value={purchase.center} onChange={e => setPurchase({...purchase, center:e.target.value})} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal">{["Fábrica","Av. de Mayo","Logística","Administración"].map(x=><option key={x}>{x}</option>)}</select></label><label className="space-y-2 text-sm font-bold">Condición de pago<select value={purchase.payment} onChange={e => setPurchase({...purchase, payment:e.target.value})} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal"><option>Pagado</option><option>Cuenta corriente</option></select></label></div>
         <div className="ml-auto mt-3 w-full max-w-sm space-y-2 rounded-2xl bg-[#f7f3f5] p-4 text-sm"><div className="flex justify-between"><span>Neto</span><b>{money(invoiceNet)}</b></div><div className="flex justify-between"><span>IVA automático</span><b>{money(invoiceTax)}</b></div><div className="flex justify-between border-t pt-3 text-lg"><span>Total factura</span><b>{money(invoiceNet + invoiceTax)}</b></div>{purchase.payment === "Cuenta corriente" && <p className="text-xs text-amber-700">Se sumará automáticamente al saldo del proveedor.</p>}</div>
