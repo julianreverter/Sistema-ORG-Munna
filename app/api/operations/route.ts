@@ -266,13 +266,25 @@ export async function POST(request: Request) {
         if (created.error) throw created.error;
         product = created.data;
       }
+
+      const recipeResult = await supabase.from("recipes").select("yield_kg, recipe_items(quantity_kg,purchased_products(last_final_cost_per_unit))").eq("product_id", product.id).eq("active", true).maybeSingle();
+      if (recipeResult.error) throw recipeResult.error;
+      const recipe = recipeResult.data as Row | null;
+      const recipeItems = Array.isArray(recipe?.recipe_items) ? recipe.recipe_items as Row[] : [];
+      const recipeCost = recipeItems.reduce((sum: number, item: Row) => {
+        const material = one(item.purchased_products) as Row | null;
+        return sum + n(item.quantity_kg) * n(material?.last_final_cost_per_unit);
+      }, 0);
+      const yieldKg = n(recipe?.yield_kg);
+      const costPerKgSnapshot = yieldKg > 0 ? recipeCost / yieldKg : null;
+
       const saved = await supabase.from("production_units").insert({
         unique_code: String(record.uniqueCode), product_id: product.id, weight_kg: record.weight == null ? null : n(record.weight),
         units: record.units == null ? null : n(record.units), responsible_id: user.id, created_by: user.id,
-        base_price_snapshot: n(record.price), lot: record.lot || null, expires_at: record.expiresAt || null,
+        base_price_snapshot: n(record.price), cost_per_kg_snapshot: costPerKgSnapshot, lot: record.lot || null, expires_at: record.expiresAt || null,
       }).select().single();
       if (saved.error) throw saved.error;
-      return Response.json({ unit: saved.data }, { status: 201 });
+      return Response.json({ unit: saved.data, costPerKgSnapshot }, { status: 201 });
     }
 
     if (payload.action === "create-dispatch") {
