@@ -276,7 +276,7 @@ export async function POST(request: Request) {
   try {
     const { user, profile, supabase } = await context();
     const payload = await request.json() as Row;
-    const financial = ["register-purchase", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
+    const financial = ["register-purchase", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "update-supplier", "archive-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
     if (financial.includes(String(payload.action)) && profile.role !== "administracion") return Response.json({ error: "No tenés permiso para esta operación." }, { status: 403 });
 
     if (payload.action === "register-production") {
@@ -340,6 +340,36 @@ export async function POST(request: Request) {
       const updateResult = await supabase.from("production_units").update({ status: "despachado", dispatched_at: new Date().toISOString() }).in("unique_code", codes);
       if (updateResult.error) throw updateResult.error;
       return Response.json({ dispatch: dispatchRow({ ...dispatchResult.data, clients: client }) }, { status: 201 });
+    }
+
+    if (payload.action === "update-supplier") {
+      const supplierId = n(payload.supplierId);
+      const supplier = payload.supplier as Row;
+      const name = String(supplier?.name ?? "").trim();
+      const taxMode = ["con_iva", "sin_iva", "revisar"].includes(String(supplier?.taxMode)) ? String(supplier.taxMode) : "revisar";
+      const category = String(supplier?.category ?? "").trim() || null;
+      if (!supplierId || !name) return Response.json({ error: "Ingresá el nombre del proveedor." }, { status: 400 });
+
+      const suppliersResult = await supabase.from("suppliers").select("id,name,active");
+      if (suppliersResult.error) throw suppliersResult.error;
+      const current = (suppliersResult.data ?? []).find((row: Row) => n(row.id) === supplierId && row.active !== false);
+      if (!current) return Response.json({ error: "El proveedor ya no existe o fue archivado." }, { status: 404 });
+      const duplicate = (suppliersResult.data ?? []).some((row: Row) => n(row.id) !== supplierId && row.active !== false && materialNameKey(row.name) === materialNameKey(name));
+      if (duplicate) return Response.json({ error: "Ya existe otro proveedor con ese nombre." }, { status: 409 });
+
+      const updated = await supabase.from("suppliers").update({ name, tax_mode: taxMode, category }).eq("id", supplierId).select("*").single();
+      if (updated.error) throw updated.error;
+      return Response.json({ supplier: updated.data });
+    }
+
+    if (payload.action === "archive-supplier") {
+      const supplierId = n(payload.supplierId);
+      if (!supplierId) return Response.json({ error: "Falta el proveedor a archivar." }, { status: 400 });
+
+      const archived = await supabase.from("suppliers").update({ active: false }).eq("id", supplierId).eq("active", true).select("id,name,active").maybeSingle();
+      if (archived.error) throw archived.error;
+      if (!archived.data) return Response.json({ error: "El proveedor ya no existe o ya fue archivado." }, { status: 404 });
+      return Response.json({ supplier: archived.data });
     }
 
     if (payload.action === "save-supplier") {
