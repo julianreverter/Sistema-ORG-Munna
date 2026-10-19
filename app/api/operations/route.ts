@@ -90,7 +90,7 @@ export async function GET() {
       supabase.from("suppliers").select("id,name,tax_mode,category,active").eq("active", true).neq("name", "Catálogo interno").order("name"),
       supabase.from("supplier_payments").select("*, suppliers(name)").order("id", { ascending: false }).limit(5000),
       supabase.from("recipes").select("*, products(code,name,family,presentation,container,unit_type,tare_kg), recipe_items(id,purchased_product_id,quantity_kg,purchased_products(master_name,last_final_cost_per_unit,cost_unit))").eq("active", true).order("name"),
-      supabase.from("products").select("code,name,family,presentation,container,unit_type,tare_kg,base_price,ingredients,expiry_days").eq("active", true).order("name"),
+      supabase.from("products").select("code,name,family,presentation,container,unit_type,tare_kg,base_price,ingredients,expiry_days,active").order("name"),
     ]);
     const firstError = [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, recipesResult, productsResult].find((r) => r.error)?.error;
     if (firstError) throw firstError;
@@ -246,7 +246,7 @@ export async function GET() {
       }) : [],
       suppliers: canSeeFinancials ? supplierRows : [],
       formulas: canSeeCosts ? formulaRows : [],
-      productProfiles: canSeeCosts ? (productsResult.data ?? []).map((r: Row) => ({
+      productProfiles: (productsResult.data ?? []).map((r: Row) => ({
         code: String(r.code),
         name: String(r.name),
         family: String(r.family),
@@ -257,7 +257,8 @@ export async function GET() {
         price: n(r.base_price),
         ingredients: String(r.ingredients ?? ""),
         expiryDays: n(r.expiry_days),
-      })) : [],
+        active: r.active !== false,
+      })),
       financialDispatches: canSeeFinancials ? allDispatches : [],
       staff: (staffResult.data ?? []).map((r: Row) => ({ id: r.id, email: r.email, displayName: r.display_name, role: r.role === "maestro_heladero" ? "produccion" : r.role === "jefe_produccion" ? "encargado" : "administracion", active: r.active })),
       currentUser: { id: profile.id, email: profile.email, displayName: profile.display_name, role, active: profile.active },
@@ -274,7 +275,7 @@ export async function POST(request: Request) {
   try {
     const { user, profile, supabase } = await context();
     const payload = await request.json() as Row;
-    const financial = ["register-purchase", "register-raw-material", "save-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
+    const financial = ["register-purchase", "register-raw-material", "save-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
     if (financial.includes(String(payload.action)) && profile.role !== "administracion") return Response.json({ error: "No tenés permiso para esta operación." }, { status: 403 });
 
     if (payload.action === "register-production") {
@@ -369,6 +370,36 @@ export async function POST(request: Request) {
       }).select("*").single();
       if (saved.error) throw saved.error;
       return Response.json({ payment: saved.data }, { status: 201 });
+    }
+
+    if (payload.action === "archive-product") {
+      const product = payload.product as Row;
+      const code = String(product?.code ?? "").trim();
+      if (!code) return Response.json({ error: "Falta el código del producto." }, { status: 400 });
+
+      const existing = await supabase.from("products").select("id").eq("code", code).maybeSingle();
+      if (existing.error) throw existing.error;
+      if (existing.data) {
+        const archived = await supabase.from("products").update({ active: false }).eq("id", existing.data.id).select("id,code,active").single();
+        if (archived.error) throw archived.error;
+        return Response.json({ product: archived.data });
+      }
+
+      const created = await supabase.from("products").insert({
+        code,
+        name: String(product.name ?? code),
+        family: String(product.family ?? "Sin categoría"),
+        presentation: String(product.presentation ?? ""),
+        container: String(product.container ?? ""),
+        unit_type: String(product.family ?? "") === "Helado" ? "kg" : "unidad",
+        tare_kg: Math.max(0, n(product.packageWeightKg)),
+        base_price: Math.max(0, n(product.price)),
+        ingredients: String(product.ingredients ?? ""),
+        expiry_days: Math.max(1, n(product.expiryDays) || 365),
+        active: false,
+      }).select("id,code,active").single();
+      if (created.error) throw created.error;
+      return Response.json({ product: created.data }, { status: 201 });
     }
 
     if (payload.action === "save-product-profile") {
