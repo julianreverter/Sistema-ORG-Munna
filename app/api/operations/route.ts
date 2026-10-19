@@ -25,6 +25,22 @@ const parseInvoiceMoney = (value: unknown) => {
   return Number(cleaned.replaceAll(".", "")) || 0;
 };
 const materialNameKey = (value: unknown) => String(value ?? "").trim().toLocaleLowerCase("es-AR");
+const PURCHASE_ALLOCATIONS_PREFIX = "__MUNNA_ALLOCATIONS__:";
+const decodePurchaseAllocations = (value: unknown): Row[] => {
+  const raw = String(value ?? "");
+  if (!raw.startsWith(PURCHASE_ALLOCATIONS_PREFIX)) return [];
+  try {
+    const parsed = JSON.parse(raw.slice(PURCHASE_ALLOCATIONS_PREFIX.length));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+const expenseCategory = (value: unknown) => {
+  const normalized = String(value ?? "Otros").trim().toLocaleLowerCase("es-AR");
+  const allowed: Record<string, string> = { servicios: "Servicios", alquileres: "Alquileres", sueldos: "Sueldos", mantenimiento: "Mantenimiento", inversiones: "Inversiones", logística: "Logística", logistica: "Logística", impuestos: "Impuestos", otros: "Otros" };
+  return allowed[normalized] ?? "Otros";
+};
 
 function productionRow(row: Row) {
   const product = one(row.products) as Row | null;
@@ -94,7 +110,7 @@ export async function GET() {
       supabase.from("customer_account_adjustments").select("*, clients(name)").order("id", { ascending: false }).limit(500),
       supabase.from("operating_expenses").select("*").order("id", { ascending: false }).limit(5000),
       supabase.from("local_sales").select("*").order("id", { ascending: false }).limit(5000),
-      supabase.from("purchases").select("*, suppliers(name), purchase_items(vat_rate,vat_amount)").order("id", { ascending: false }).limit(5000),
+      supabase.from("purchases").select("*, suppliers(name), purchase_items(vat_rate,vat_amount,line_total,purchased_product_id,purchased_products(master_name,supplier_description))").order("id", { ascending: false }).limit(5000),
       supabase.from("profiles").select("*").order("display_name"),
       supabase.from("purchased_products").select("*, suppliers(id,name)").eq("active", true).order("master_name"),
       supabase.from("suppliers").select("id,name,tax_mode,category,active").eq("active", true).neq("name", "Catálogo interno").order("name"),
@@ -115,6 +131,7 @@ export async function GET() {
     const normalizeMaterialName = (value: unknown) => String(value ?? "").trim().toLocaleLowerCase("es-AR");
     const materialByName = new Map<string, Row>();
     for (const material of (materialsResult.data ?? []) as Row[]) {
+      if (String(material.master_name ?? "").startsWith("__GASTO__")) continue;
       const key = normalizeMaterialName(material.master_name);
       const current = materialByName.get(key);
       const currentDate = String(current?.last_purchase_at ?? "");
@@ -129,6 +146,15 @@ export async function GET() {
       const items = Array.isArray(r.purchase_items) ? r.purchase_items : [];
       const vat21 = items.filter((item: Row) => n(item.vat_rate) === 21).reduce((sum: number, item: Row) => sum + n(item.vat_amount), 0);
       const vat105 = items.filter((item: Row) => n(item.vat_rate) === 10.5).reduce((sum: number, item: Row) => sum + n(item.vat_amount), 0);
+      const allocations = decodePurchaseAllocations(r.cost_center).map((allocation) => ({
+        kind: ["material", "service", "expense"].includes(String(allocation.kind)) ? String(allocation.kind) : "expense",
+        category: String(allocation.category ?? "Otros"),
+        center: String(allocation.center ?? "Fábrica"),
+        description: String(allocation.description ?? "Sin detalle"),
+        gross: n(allocation.gross),
+      }));
+      const centers = Array.from(new Set(allocations.map((allocation) => allocation.center)));
+      const displayCenter = allocations.length ? centers.length === 1 ? centers[0] : "Mixto" : String(r.cost_center ?? "Fábrica");
       return {
         id: r.id,
         supplierId: r.supplier_id,
@@ -138,8 +164,9 @@ export async function GET() {
         invoice: r.invoice_number,
         invoiceDate: r.invoice_date,
         date: new Date(`${r.invoice_date}T12:00:00`).toLocaleDateString("es-AR"),
-        costCenter: r.cost_center,
-        center: r.cost_center,
+        costCenter: displayCenter,
+        center: displayCenter,
+        allocations,
         paymentStatus: r.payment_status,
         status: r.payment_status === "cuenta_corriente" ? "Cuenta corriente" : "Pagado",
         netTotal: n(r.net_total),
@@ -150,7 +177,7 @@ export async function GET() {
         tax: n(r.vat_total),
         grossTotal: n(r.gross_total),
         total: n(r.gross_total),
-        detail: `${items.length} ${items.length === 1 ? "producto" : "productos"}`,
+        detail: allocations.length ? `${allocations.length} ${allocations.length === 1 ? "renglón" : "renglones"}` : `${items.length} ${items.length === 1 ? "producto" : "productos"}`,
         createdAt: r.created_at,
       };
     });
@@ -610,17 +637,42 @@ export async function POST(request: Request) {
     if (payload.action === "register-purchase") {
       const purchase = payload.purchase as Row;
       const lines = Array.isArray(payload.lines) ? payload.lines as Row[] : [];
-      if (!purchase?.supplier || !purchase.invoice || !lines.length) return Response.json({ error: "Faltan proveedor, factura o productos." }, { status: 400 });
+      if (!purchase?.supplier || !purchase.invoice || !lines.length) return Response.json({ error: "Faltan proveedor, factura o renglones." }, { status: 400 });
 
       const supplierTaxMode = String(payload.supplierTaxMode).toLowerCase();
       const taxMode = supplierTaxMode.includes("sin") ? "sin_iva" : supplierTaxMode.includes("con") ? "con_iva" : "revisar";
+      const supplierResult = await supabase.from("suppliers").upsert({ name: String(purchase.supplier), tax_mode: taxMode, active: true }, { onConflict: "name" }).select().single();
+      if (supplierResult.error) throw supplierResult.error;
+
       const preparedLines: Row[] = [];
       for (const line of lines) {
         const productName = String(line.product ?? "").trim();
-        const profileResult = await supabase.from("purchased_products").select("*").eq("master_name", productName).eq("active", true).order("last_purchase_at", { ascending: false, nullsFirst: false }).order("id", { ascending: true }).limit(1);
-        if (profileResult.error) throw profileResult.error;
-        const materialProfile = profileResult.data?.[0];
-        if (!materialProfile) return Response.json({ error: `La materia prima "${productName}" no existe. Creala antes de cargar la factura.` }, { status: 400 });
+        const kind = ["material", "service", "expense"].includes(String(line.kind)) ? String(line.kind) : "material";
+        const category = kind === "material" ? "Materia prima" : expenseCategory(line.category);
+        const center = String(line.center ?? "Fábrica").trim() || "Fábrica";
+        if (!productName) return Response.json({ error: "Todos los renglones deben tener un producto o concepto." }, { status: 400 });
+
+        let materialProfile: Row | null = null;
+        if (kind === "material") {
+          const profileResult = await supabase.from("purchased_products").select("*").eq("master_name", productName).eq("active", true).order("last_purchase_at", { ascending: false, nullsFirst: false }).order("id", { ascending: true }).limit(1);
+          if (profileResult.error) throw profileResult.error;
+          materialProfile = profileResult.data?.[0] ?? null;
+          if (!materialProfile) return Response.json({ error: `La materia prima "${productName}" no existe. Creala antes de cargar la factura.` }, { status: 400 });
+        } else {
+          const requestedRate = [0, 10.5, 21].includes(n(line.vatRate)) ? n(line.vatRate) : 21;
+          const syntheticDescription = `__GASTO__:${kind}:${category}:${productName}`;
+          const syntheticResult = await supabase.from("purchased_products").upsert({
+            master_name: `__GASTO__${productName}`,
+            supplier_id: supplierResult.data.id,
+            supplier_description: syntheticDescription,
+            cost_unit: "unidad",
+            content_per_package: 1,
+            vat_rate: requestedRate,
+            active: true,
+          }, { onConflict: "supplier_id,supplier_description" }).select("*").single();
+          if (syntheticResult.error) throw syntheticResult.error;
+          materialProfile = syntheticResult.data;
+        }
 
         const quantity = n(String(line.quantity ?? 0).replace(",", "."));
         const enteredUnitPrice = parseInvoiceMoney(line.price);
@@ -628,7 +680,9 @@ export async function POST(request: Request) {
 
         const requestedMode = String(line.priceMode ?? "");
         const priceMode = ["included", "excluded", "black"].includes(requestedMode) ? requestedMode : taxMode === "con_iva" ? "excluded" : "black";
-        const profileVatRate = [0, 10.5, 21].includes(n(materialProfile.vat_rate)) ? n(materialProfile.vat_rate) : 21;
+        const profileVatRate = kind === "material"
+          ? ([0, 10.5, 21].includes(n(materialProfile.vat_rate)) ? n(materialProfile.vat_rate) : 21)
+          : ([0, 10.5, 21].includes(n(line.vatRate)) ? n(line.vatRate) : 21);
         const vatRate = priceMode === "black" ? 0 : profileVatRate;
         const unitNet = priceMode === "included" && vatRate > 0 ? enteredUnitPrice / (1 + vatRate / 100) : enteredUnitPrice;
         const unitGross = priceMode === "excluded" ? enteredUnitPrice * (1 + vatRate / 100) : enteredUnitPrice;
@@ -640,6 +694,9 @@ export async function POST(request: Request) {
         preparedLines.push({
           productName,
           materialProfile,
+          kind,
+          category,
+          center,
           quantity,
           unitNet,
           unitGross,
@@ -654,14 +711,14 @@ export async function POST(request: Request) {
       const netTotal = roundCurrency(preparedLines.reduce((sum, line) => sum + n(line.netLine), 0));
       const vatTotal = roundCurrency(preparedLines.reduce((sum, line) => sum + n(line.vatAmount), 0));
       const grossTotal = roundCurrency(preparedLines.reduce((sum, line) => sum + n(line.grossLine), 0));
-      const supplierResult = await supabase.from("suppliers").upsert({ name: String(purchase.supplier), tax_mode: taxMode }, { onConflict: "name" }).select().single();
-      if (supplierResult.error) throw supplierResult.error;
+      const allocations = preparedLines.map((line) => ({ kind: line.kind, category: line.category, center: line.center, description: line.productName, gross: line.grossLine }));
+      const encodedCostCenter = PURCHASE_ALLOCATIONS_PREFIX + JSON.stringify(allocations);
       const paymentStatus = String(purchase.payment).toLowerCase().includes("cuenta") ? "cuenta_corriente" : "pagada";
       const savedPurchase = await supabase.from("purchases").insert({
         supplier_id: supplierResult.data.id,
         invoice_number: String(purchase.invoice),
         invoice_date: purchase.invoiceDate || today(),
-        cost_center: String(purchase.center ?? "Fábrica"),
+        cost_center: encodedCostCenter,
         payment_status: paymentStatus,
         net_total: netTotal,
         vat_total: vatTotal,
@@ -683,7 +740,7 @@ export async function POST(request: Request) {
       if (itemResult.error) throw itemResult.error;
 
       const invoiceDate = String(purchase.invoiceDate || today());
-      for (const line of preparedLines) {
+      for (const line of preparedLines.filter((item) => item.kind === "material")) {
         if (!line.materialProfile.last_purchase_at || invoiceDate >= String(line.materialProfile.last_purchase_at)) {
           const updateCost = await supabase.from("purchased_products").update({
             last_net_package_cost: line.unitNet,
