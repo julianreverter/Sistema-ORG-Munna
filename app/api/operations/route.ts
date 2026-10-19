@@ -673,6 +673,7 @@ export async function POST(request: Request) {
           if (syntheticResult.error) throw syntheticResult.error;
           materialProfile = syntheticResult.data;
         }
+        if (!materialProfile) return Response.json({ error: `No se pudo preparar el renglón "${productName}".` }, { status: 400 });
 
         const quantity = n(String(line.quantity ?? 0).replace(",", "."));
         const enteredUnitPrice = parseInvoiceMoney(line.price);
