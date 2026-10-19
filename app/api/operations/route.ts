@@ -77,19 +77,21 @@ export async function GET() {
   try {
     const { profile, supabase } = await context();
     const productionSelect = "*, products(code,name,family,presentation,container), responsible:profiles!production_units_responsible_id_fkey(display_name), dispatch_items(dispatches(remittance_number,clients(name)))";
-    const [unitsResult, dispatchResult, paymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult] = await Promise.all([
+    const [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, recipesResult] = await Promise.all([
       supabase.from("production_units").select(productionSelect).order("id", { ascending: false }).limit(5000),
       supabase.from("dispatches").select("*, clients(name), dispatch_items(*, production_units(unique_code,weight_kg,units,products(code,name,family,presentation,container)))").order("id", { ascending: false }).limit(5000),
       supabase.from("customer_payments").select("*, clients(name)").order("id", { ascending: false }).limit(500),
       supabase.from("customer_account_adjustments").select("*, clients(name)").order("id", { ascending: false }).limit(500),
       supabase.from("operating_expenses").select("*").order("id", { ascending: false }).limit(5000),
       supabase.from("local_sales").select("*").order("id", { ascending: false }).limit(5000),
-      supabase.from("purchases").select("*, suppliers(name)").order("id", { ascending: false }).limit(5000),
+      supabase.from("purchases").select("*, suppliers(name), purchase_items(vat_rate,vat_amount)").order("id", { ascending: false }).limit(5000),
       supabase.from("profiles").select("*").order("display_name"),
       supabase.from("purchased_products").select("*, suppliers(id,name)").eq("active", true).order("master_name"),
       supabase.from("suppliers").select("id,name,tax_mode,category,active").eq("active", true).order("name"),
+      supabase.from("supplier_payments").select("*, suppliers(name)").order("id", { ascending: false }).limit(5000),
+      supabase.from("recipes").select("*, products(code,name,family,presentation,container), recipe_items(id,purchased_product_id,quantity_kg,purchased_products(master_name,last_final_cost_per_unit,cost_unit))").eq("active", true).order("name"),
     ]);
-    const firstError = [unitsResult, dispatchResult, paymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult].find((r) => r.error)?.error;
+    const firstError = [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, recipesResult].find((r) => r.error)?.error;
     if (firstError) throw firstError;
 
     const allUnits = (unitsResult.data ?? []).map(productionRow);
@@ -99,38 +101,126 @@ export async function GET() {
     const lastNumeric = allUnits.map((u) => Number(u.uniqueCode)).filter(Number.isFinite).reduce((max, code) => Math.max(max, code), 4529);
     const role = profile.role === "maestro_heladero" ? "produccion" : profile.role === "jefe_produccion" ? "encargado" : "administracion";
 
+    const purchaseRows = (purchasesResult.data ?? []).map((r: Row) => {
+      const items = Array.isArray(r.purchase_items) ? r.purchase_items : [];
+      const vat21 = items.filter((item: Row) => n(item.vat_rate) === 21).reduce((sum: number, item: Row) => sum + n(item.vat_amount), 0);
+      const vat105 = items.filter((item: Row) => n(item.vat_rate) === 10.5).reduce((sum: number, item: Row) => sum + n(item.vat_amount), 0);
+      return {
+        id: r.id,
+        supplierId: r.supplier_id,
+        supplierName: one(r.suppliers)?.name ?? "",
+        supplier: one(r.suppliers)?.name ?? "",
+        invoiceNumber: r.invoice_number,
+        invoice: r.invoice_number,
+        invoiceDate: r.invoice_date,
+        date: new Date(`${r.invoice_date}T12:00:00`).toLocaleDateString("es-AR"),
+        costCenter: r.cost_center,
+        center: r.cost_center,
+        paymentStatus: r.payment_status,
+        status: r.payment_status === "cuenta_corriente" ? "Cuenta corriente" : "Pagado",
+        netTotal: n(r.net_total),
+        net: n(r.net_total),
+        vatTotal: n(r.vat_total),
+        vat21,
+        vat105,
+        tax: n(r.vat_total),
+        grossTotal: n(r.gross_total),
+        total: n(r.gross_total),
+        detail: `${items.length} ${items.length === 1 ? "producto" : "productos"}`,
+        createdAt: r.created_at,
+      };
+    });
+    const supplierPaymentRows = (supplierPaymentsResult.data ?? []).map((r: Row) => ({
+      id: r.id,
+      supplierId: r.supplier_id,
+      supplier: one(r.suppliers)?.name ?? "",
+      paymentDate: r.payment_date,
+      date: new Date(`${r.payment_date}T12:00:00`).toLocaleDateString("es-AR"),
+      amount: n(r.amount),
+      method: r.method,
+      reference: r.reference ?? "Sin referencia",
+      note: r.notes ?? "Pago a cuenta",
+      createdAt: r.created_at,
+    }));
+    const supplierRows = (suppliersResult.data ?? []).map((r: Row) => {
+      const supplierPurchases = purchaseRows.filter((purchase: Row) => n(purchase.supplierId) === n(r.id));
+      const supplierPayments = supplierPaymentRows.filter((payment: Row) => n(payment.supplierId) === n(r.id));
+      const invoiced = supplierPurchases.filter((purchase: Row) => purchase.paymentStatus === "cuenta_corriente").reduce((sum: number, purchase: Row) => sum + n(purchase.grossTotal), 0);
+      const paid = supplierPayments.reduce((sum: number, payment: Row) => sum + n(payment.amount), 0);
+      const lastPurchase = supplierPurchases[0];
+      return {
+        id: r.id,
+        name: r.name,
+        taxMode: r.tax_mode === "con_iva" ? "Con IVA" : r.tax_mode === "sin_iva" ? "Sin IVA" : "Revisar",
+        category: r.category ?? "",
+        active: r.active,
+        debt: invoiced - paid,
+        invoices: supplierPurchases.length === 1 ? "1 factura" : `${supplierPurchases.length} facturas`,
+        date: lastPurchase?.date ?? "Sin compras",
+      };
+    });
+    const formulaRows = (recipesResult.data ?? []).map((r: Row) => {
+      const product = one(r.products) as Row | null;
+      const items = (Array.isArray(r.recipe_items) ? r.recipe_items : []).map((item: Row) => {
+        const material = one(item.purchased_products) as Row | null;
+        const quantity = n(item.quantity_kg);
+        const unitCost = n(material?.last_final_cost_per_unit);
+        return {
+          id: item.id,
+          materialId: item.purchased_product_id,
+          materialName: material?.master_name ?? "",
+          quantityKg: quantity,
+          unitCost,
+          lineCost: quantity * unitCost,
+        };
+      });
+      const recipeCost = items.reduce((sum: number, item: Row) => sum + n(item.lineCost), 0);
+      const yieldKg = n(r.yield_kg);
+      return {
+        id: r.id,
+        productCode: product?.code ?? "",
+        productName: product?.name ?? r.name,
+        name: r.name,
+        yieldKg,
+        batch: `${yieldKg.toLocaleString("es-AR", { maximumFractionDigits: 3 })} kg`,
+        ingredients: items.length,
+        recipe: recipeCost,
+        perKg: yieldKg > 0 ? recipeCost / yieldKg : 0,
+        updated: new Date(r.updated_at ?? r.created_at).toLocaleDateString("es-AR"),
+        items,
+      };
+    });
+
     return Response.json({
       stock: allUnits.filter((u) => u.status === "stock"),
       productionHistory: canSeeCosts ? allUnits : allUnits.map(({ costPerKgSnapshot: _cost, ...unit }) => unit),
       recentDispatches: profile.role === "maestro_heladero" ? [] : allDispatches.slice(0, 50),
       remittances: profile.role === "maestro_heladero" ? [] : allDispatches.slice(0, 500),
-      customerPayments: canSeeFinancials ? (paymentsResult.data ?? []).map((r: Row) => ({ ...r, clientId: r.client_id, clientName: one(r.clients)?.name, paymentDate: r.payment_date, createdAt: r.created_at })) : [],
+      customerPayments: canSeeFinancials ? (customerPaymentsResult.data ?? []).map((r: Row) => ({ ...r, clientId: r.client_id, clientName: one(r.clients)?.name, paymentDate: r.payment_date, createdAt: r.created_at })) : [],
       customerAdjustments: canSeeFinancials ? (adjustmentsResult.data ?? []).map((r: Row) => ({ ...r, clientId: r.client_id, clientName: one(r.clients)?.name, movementDate: r.movement_date, movementType: r.movement_type, signedAmount: n(r.signed_amount), createdAt: r.created_at })) : [],
-      operatingExpenses: canSeeFinancials ? (expensesResult.data ?? []).map((r: Row) => ({ ...r, expenseDate: r.expense_date, createdAt: r.created_at, amount: n(r.amount) })) : [],
+      operatingExpenses: canSeeFinancials ? (expensesResult.data ?? []).map((r: Row) => {
+        const labels: Record<string, string> = { servicios: "Servicios", alquileres: "Alquileres", sueldos: "Sueldos", mantenimiento: "Mantenimiento", inversiones: "Inversiones", otros: "Otros" };
+        return { ...r, expenseDate: r.expense_date, createdAt: r.created_at, amount: n(r.amount), category: labels[String(r.category)] ?? "Otros" };
+      }) : [],
       localSales: canSeeFinancials ? (salesResult.data ?? []).map((r: Row) => ({ ...r, saleDate: r.sale_date, createdAt: r.created_at, amount: n(r.amount) })) : [],
-      purchases: canSeeFinancials ? (purchasesResult.data ?? []).map((r: Row) => ({ ...r, supplierId: r.supplier_id, supplierName: one(r.suppliers)?.name, invoiceNumber: r.invoice_number, invoiceDate: r.invoice_date, costCenter: r.cost_center, paymentStatus: r.payment_status, netTotal: n(r.net_total), vatTotal: n(r.vat_total), grossTotal: n(r.gross_total), createdAt: r.created_at })) : [],
+      purchases: canSeeFinancials ? purchaseRows : [],
+      supplierPayments: canSeeFinancials ? supplierPaymentRows : [],
       rawMaterials: canSeeCosts ? (materialsResult.data ?? []).map((r: Row) => {
         const supplier = one(r.suppliers) as Row | null;
         const unit = String(r.cost_unit ?? "kg");
         const content = n(r.content_per_package);
         const cost = n(r.last_final_cost_per_unit);
         return {
-          id: r.id,
-          name: r.master_name,
-          supplierId: r.supplier_id,
-          supplier: supplier?.name ?? "",
-          supplierDescription: r.supplier_description,
-          unit,
-          contentPerPackage: content,
+          id: r.id, name: r.master_name, supplierId: r.supplier_id, supplier: supplier?.name ?? "",
+          supplierDescription: r.supplier_description, unit, contentPerPackage: content,
           pack: `${content.toLocaleString("es-AR", { maximumFractionDigits: 3 })} ${unit}`,
-          vat: n(r.vat_rate),
-          cost,
-          previous: cost,
+          vat: n(r.vat_rate), cost, previous: cost,
           date: r.last_purchase_at ? new Date(`${r.last_purchase_at}T12:00:00`).toLocaleDateString("es-AR") : "Sin compras",
           active: r.active,
         };
       }) : [],
-      suppliers: canSeeFinancials ? (suppliersResult.data ?? []).map((r: Row) => ({ id: r.id, name: r.name, taxMode: r.tax_mode, category: r.category, active: r.active })) : [],
+      suppliers: canSeeFinancials ? supplierRows : [],
+      formulas: canSeeCosts ? formulaRows : [],
       financialDispatches: canSeeFinancials ? allDispatches : [],
       staff: (staffResult.data ?? []).map((r: Row) => ({ id: r.id, email: r.email, displayName: r.display_name, role: r.role === "maestro_heladero" ? "produccion" : r.role === "jefe_produccion" ? "encargado" : "administracion", active: r.active })),
       currentUser: { id: profile.id, email: profile.email, displayName: profile.display_name, role, active: profile.active },
@@ -147,7 +237,7 @@ export async function POST(request: Request) {
   try {
     const { user, profile, supabase } = await context();
     const payload = await request.json() as Row;
-    const financial = ["register-purchase", "register-raw-material", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
+    const financial = ["register-purchase", "register-raw-material", "save-supplier", "register-supplier-payment", "save-recipe", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
     if (financial.includes(String(payload.action)) && profile.role !== "administracion") return Response.json({ error: "No tenés permiso para esta operación." }, { status: 403 });
 
     if (payload.action === "register-production") {
@@ -199,6 +289,83 @@ export async function POST(request: Request) {
       const updateResult = await supabase.from("production_units").update({ status: "despachado", dispatched_at: new Date().toISOString() }).in("unique_code", codes);
       if (updateResult.error) throw updateResult.error;
       return Response.json({ dispatch: dispatchRow({ ...dispatchResult.data, clients: client }) }, { status: 201 });
+    }
+
+    if (payload.action === "save-supplier") {
+      const supplier = payload.supplier as Row;
+      const name = String(supplier?.name ?? "").trim();
+      const taxMode = ["con_iva", "sin_iva", "revisar"].includes(String(supplier?.taxMode)) ? String(supplier.taxMode) : "revisar";
+      if (!name) return Response.json({ error: "Ingresá el nombre del proveedor." }, { status: 400 });
+      const saved = await supabase.from("suppliers").insert({ name, tax_mode: taxMode, category: String(supplier?.category ?? "").trim() || null, active: true }).select("*").single();
+      if (saved.error) throw saved.error;
+      return Response.json({ supplier: saved.data }, { status: 201 });
+    }
+
+    if (payload.action === "register-supplier-payment") {
+      const payment = payload.payment as Row;
+      const supplierName = String(payment?.supplier ?? "").trim();
+      const amount = Math.abs(n(payment?.amount));
+      if (!supplierName || amount <= 0) return Response.json({ error: "Seleccioná un proveedor e ingresá un monto mayor a cero." }, { status: 400 });
+      const supplierResult = await supabase.from("suppliers").select("id").eq("name", supplierName).maybeSingle();
+      if (supplierResult.error) throw supplierResult.error;
+      if (!supplierResult.data) return Response.json({ error: "El proveedor seleccionado no existe." }, { status: 404 });
+      const saved = await supabase.from("supplier_payments").insert({
+        supplier_id: supplierResult.data.id,
+        payment_date: payment.paymentDate || today(),
+        amount,
+        method: String(payment.method ?? "Transferencia"),
+        reference: String(payment.reference ?? "").trim() || null,
+        notes: String(payment.note ?? "").trim() || null,
+        created_by: user.id,
+      }).select("*").single();
+      if (saved.error) throw saved.error;
+      return Response.json({ payment: saved.data }, { status: 201 });
+    }
+
+    if (payload.action === "save-recipe") {
+      const recipe = payload.recipe as Row;
+      const productData = recipe?.product as Row;
+      const productCode = String(productData?.code ?? recipe?.productCode ?? "").trim();
+      const name = String(recipe?.name ?? productData?.name ?? "").trim();
+      const yieldKg = n(recipe?.yieldKg);
+      const items = Array.isArray(recipe?.items) ? recipe.items as Row[] : [];
+      if (!productCode || !name || yieldKg <= 0 || !items.length) return Response.json({ error: "Elegí el producto, indicá el rendimiento y agregá al menos una materia prima." }, { status: 400 });
+      if (items.some((item) => n(item.materialId) <= 0 || n(item.quantityKg) <= 0)) return Response.json({ error: "Revisá las materias primas y sus cantidades." }, { status: 400 });
+
+      let { data: product, error: productError } = await supabase.from("products").select("id").eq("code", productCode).maybeSingle();
+      if (productError) throw productError;
+      if (!product) {
+        const createdProduct = await supabase.from("products").insert({
+          code: productCode,
+          name: String(productData?.name ?? name),
+          family: String(productData?.family ?? "Helado"),
+          presentation: String(productData?.presentation ?? "Producción"),
+          container: String(productData?.container ?? ""),
+          unit_type: "kg",
+          base_price: n(productData?.price),
+          ingredients: String(productData?.ingredients ?? ""),
+          expiry_days: Math.max(1, n(productData?.expiryDays) || 365),
+        }).select("id").single();
+        if (createdProduct.error) throw createdProduct.error;
+        product = createdProduct.data;
+      }
+
+      const savedRecipe = await supabase.from("recipes").upsert({
+        product_id: product.id,
+        name,
+        yield_kg: yieldKg,
+        active: true,
+      }, { onConflict: "product_id" }).select("*").single();
+      if (savedRecipe.error) throw savedRecipe.error;
+      const deleteItems = await supabase.from("recipe_items").delete().eq("recipe_id", savedRecipe.data.id);
+      if (deleteItems.error) throw deleteItems.error;
+      const savedItems = await supabase.from("recipe_items").insert(items.map((item) => ({
+        recipe_id: savedRecipe.data.id,
+        purchased_product_id: n(item.materialId),
+        quantity_kg: n(item.quantityKg),
+      })));
+      if (savedItems.error) throw savedItems.error;
+      return Response.json({ recipe: savedRecipe.data }, { status: 201 });
     }
 
     if (payload.action === "register-raw-material") {
