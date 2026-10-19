@@ -87,7 +87,7 @@ export async function GET() {
       supabase.from("purchases").select("*, suppliers(name), purchase_items(vat_rate,vat_amount)").order("id", { ascending: false }).limit(5000),
       supabase.from("profiles").select("*").order("display_name"),
       supabase.from("purchased_products").select("*, suppliers(id,name)").eq("active", true).order("master_name"),
-      supabase.from("suppliers").select("id,name,tax_mode,category,active").eq("active", true).order("name"),
+      supabase.from("suppliers").select("id,name,tax_mode,category,active").eq("active", true).neq("name", "Catálogo interno").order("name"),
       supabase.from("supplier_payments").select("*, suppliers(name)").order("id", { ascending: false }).limit(5000),
       supabase.from("recipes").select("*, products(code,name,family,presentation,container), recipe_items(id,purchased_product_id,quantity_kg,purchased_products(master_name,last_final_cost_per_unit,cost_unit))").eq("active", true).order("name"),
     ]);
@@ -100,6 +100,19 @@ export async function GET() {
     const canSeeCosts = canSeeFinancials || profile.role === "jefe_produccion";
     const lastNumeric = allUnits.map((u) => Number(u.uniqueCode)).filter(Number.isFinite).reduce((max, code) => Math.max(max, code), 4529);
     const role = profile.role === "maestro_heladero" ? "produccion" : profile.role === "jefe_produccion" ? "encargado" : "administracion";
+
+    const normalizeMaterialName = (value: unknown) => String(value ?? "").trim().toLocaleLowerCase("es-AR");
+    const materialByName = new Map<string, Row>();
+    for (const material of (materialsResult.data ?? []) as Row[]) {
+      const key = normalizeMaterialName(material.master_name);
+      const current = materialByName.get(key);
+      const currentDate = String(current?.last_purchase_at ?? "");
+      const candidateDate = String(material.last_purchase_at ?? "");
+      if (!current || candidateDate > currentDate || (candidateDate === currentDate && n(material.id) < n(current.id))) {
+        materialByName.set(key, material);
+      }
+    }
+    const materialRows = Array.from(materialByName.values()).sort((a, b) => String(a.master_name).localeCompare(String(b.master_name), "es"));
 
     const purchaseRows = (purchasesResult.data ?? []).map((r: Row) => {
       const items = Array.isArray(r.purchase_items) ? r.purchase_items : [];
@@ -162,12 +175,13 @@ export async function GET() {
     const formulaRows = (recipesResult.data ?? []).map((r: Row) => {
       const product = one(r.products) as Row | null;
       const items = (Array.isArray(r.recipe_items) ? r.recipe_items : []).map((item: Row) => {
-        const material = one(item.purchased_products) as Row | null;
+        const linkedMaterial = one(item.purchased_products) as Row | null;
+        const material = materialByName.get(normalizeMaterialName(linkedMaterial?.master_name)) ?? linkedMaterial;
         const quantity = n(item.quantity_kg);
         const unitCost = n(material?.last_final_cost_per_unit);
         return {
           id: item.id,
-          materialId: item.purchased_product_id,
+          materialId: material?.id ?? item.purchased_product_id,
           materialName: material?.master_name ?? "",
           quantityKg: quantity,
           unitCost,
@@ -205,16 +219,19 @@ export async function GET() {
       localSales: canSeeFinancials ? (salesResult.data ?? []).map((r: Row) => ({ ...r, saleDate: r.sale_date, createdAt: r.created_at, amount: n(r.amount) })) : [],
       purchases: canSeeFinancials ? purchaseRows : [],
       supplierPayments: canSeeFinancials ? supplierPaymentRows : [],
-      rawMaterials: canSeeCosts ? (materialsResult.data ?? []).map((r: Row) => {
-        const supplier = one(r.suppliers) as Row | null;
+      rawMaterials: canSeeCosts ? materialRows.map((r: Row) => {
         const unit = String(r.cost_unit ?? "kg");
         const content = n(r.content_per_package);
         const cost = n(r.last_final_cost_per_unit);
         return {
-          id: r.id, name: r.master_name, supplierId: r.supplier_id, supplier: supplier?.name ?? "",
-          supplierDescription: r.supplier_description, unit, contentPerPackage: content,
+          id: r.id,
+          name: r.master_name,
+          unit,
+          contentPerPackage: content,
           pack: `${content.toLocaleString("es-AR", { maximumFractionDigits: 3 })} ${unit}`,
-          vat: n(r.vat_rate), cost, previous: cost,
+          vat: n(r.vat_rate),
+          cost,
+          previous: cost,
           date: r.last_purchase_at ? new Date(`${r.last_purchase_at}T12:00:00`).toLocaleDateString("es-AR") : "Sin compras",
           active: r.active,
         };
@@ -313,7 +330,7 @@ export async function POST(request: Request) {
         supplier_id: supplierResult.data.id,
         payment_date: payment.paymentDate || today(),
         amount,
-        method: String(payment.method ?? "Transferencia"),
+        method: ({ Transferencia: "transferencia", Efectivo: "efectivo", Echeq: "echeq", "Cheque de tercero": "cheque_tercero", Mercadería: "mercaderia" } as Record<string, string>)[String(payment.method)] ?? String(payment.method ?? "transferencia").toLowerCase(),
         reference: String(payment.reference ?? "").trim() || null,
         notes: String(payment.note ?? "").trim() || null,
         created_by: user.id,
@@ -371,25 +388,27 @@ export async function POST(request: Request) {
     if (payload.action === "register-raw-material") {
       const material = payload.material as Row;
       const name = String(material?.name ?? "").trim();
-      const supplierName = String(material?.supplier ?? "").trim();
-      const supplierDescription = String(material?.supplierDescription ?? "").trim() || name;
       const unit = String(material?.unit ?? "kg") === "unidad" ? "unidad" : "kg";
       const contentPerPackage = n(material?.contentPerPackage);
       const vatRate = [0, 10.5, 21].includes(n(material?.vat)) ? n(material?.vat) : 21;
-      if (!name || !supplierName || contentPerPackage <= 0) return Response.json({ error: "Completá nombre, proveedor y contenido por envase." }, { status: 400 });
+      if (!name || contentPerPackage <= 0) return Response.json({ error: "Completá el nombre y un contenido por envase mayor a cero." }, { status: 400 });
 
-      let { data: supplier, error: supplierError } = await supabase.from("suppliers").select("id,name").eq("name", supplierName).maybeSingle();
+      const existing = await supabase.from("purchased_products").select("id").ilike("master_name", name).limit(1).maybeSingle();
+      if (existing.error) throw existing.error;
+      if (existing.data) return Response.json({ error: "Ya existe una materia prima con ese nombre." }, { status: 409 });
+
+      let { data: catalogSupplier, error: supplierError } = await supabase.from("suppliers").select("id").eq("name", "Catálogo interno").maybeSingle();
       if (supplierError) throw supplierError;
-      if (!supplier) {
-        const createdSupplier = await supabase.from("suppliers").insert({ name: supplierName, tax_mode: "revisar", active: true }).select("id,name").single();
+      if (!catalogSupplier) {
+        const createdSupplier = await supabase.from("suppliers").insert({ name: "Catálogo interno", tax_mode: "revisar", category: "Sistema", active: true }).select("id").single();
         if (createdSupplier.error) throw createdSupplier.error;
-        supplier = createdSupplier.data;
+        catalogSupplier = createdSupplier.data;
       }
 
       const created = await supabase.from("purchased_products").insert({
         master_name: name,
-        supplier_id: supplier.id,
-        supplier_description: supplierDescription,
+        supplier_id: catalogSupplier.id,
+        supplier_description: name,
         cost_unit: unit,
         content_per_package: contentPerPackage,
         vat_rate: vatRate,
@@ -400,9 +419,6 @@ export async function POST(request: Request) {
         material: {
           id: created.data.id,
           name: created.data.master_name,
-          supplierId: created.data.supplier_id,
-          supplier: supplier.name,
-          supplierDescription: created.data.supplier_description,
           unit: created.data.cost_unit,
           contentPerPackage: n(created.data.content_per_package),
           pack: `${n(created.data.content_per_package).toLocaleString("es-AR", { maximumFractionDigits: 3 })} ${created.data.cost_unit}`,
@@ -426,17 +442,24 @@ export async function POST(request: Request) {
       const savedPurchase = await supabase.from("purchases").insert({ supplier_id: supplierResult.data.id, invoice_number: String(purchase.invoice), invoice_date: purchase.invoiceDate || today(), cost_center: String(purchase.center ?? "Fábrica"), payment_status: paymentStatus, net_total: n(totals?.net), vat_total: n(totals?.vat), gross_total: n(totals?.gross), created_by: user.id }).select().single();
       if (savedPurchase.error) throw savedPurchase.error;
       for (const line of lines) {
-        const productName = String(line.product ?? "");
-        const profileResult = await supabase.from("purchased_products").upsert({ master_name: productName, supplier_id: supplierResult.data.id, supplier_description: productName, cost_unit: String(line.costUnit).toLowerCase().includes("unidad") ? "unidad" : "kg", content_per_package: Math.max(0.001, n(line.contentPerPackage) || 1), vat_rate: n(line.vatRate), active: true }, { onConflict: "supplier_id,supplier_description" }).select().single();
+        const productName = String(line.product ?? "").trim();
+        const profileResult = await supabase.from("purchased_products").select("*").ilike("master_name", productName).eq("active", true).order("last_purchase_at", { ascending: false, nullsFirst: false }).order("id", { ascending: true }).limit(1);
         if (profileResult.error) throw profileResult.error;
+        const materialProfile = profileResult.data?.[0];
+        if (!materialProfile) return Response.json({ error: `La materia prima "${productName}" no existe. Creala antes de cargar la factura.` }, { status: 400 });
         const quantity = n(String(line.quantity ?? 0).replace(",", "."));
         const price = n(String(line.price ?? 0).replace(/[^0-9.,-]/g, "").replaceAll(".", "").replace(",", "."));
         const vatRate = taxMode === "con_iva" ? n(line.vatRate) : 0;
-        const netLine = quantity * price; const content = Math.max(0.001, n(line.contentPerPackage) || 1);
+        const netLine = quantity * price;
+        const content = Math.max(0.001, n(line.contentPerPackage) || n(materialProfile.content_per_package) || 1);
         const finalUnit = price * (1 + vatRate / 100) / content;
-        const itemResult = await supabase.from("purchase_items").insert({ purchase_id: savedPurchase.data.id, purchased_product_id: profileResult.data.id, quantity, net_package_price: price, vat_rate: vatRate, vat_amount: netLine * vatRate / 100, line_total: netLine * (1 + vatRate / 100), final_cost_per_unit: finalUnit });
+        const itemResult = await supabase.from("purchase_items").insert({ purchase_id: savedPurchase.data.id, purchased_product_id: materialProfile.id, quantity, net_package_price: price, vat_rate: vatRate, vat_amount: netLine * vatRate / 100, line_total: netLine * (1 + vatRate / 100), final_cost_per_unit: finalUnit });
         if (itemResult.error) throw itemResult.error;
-        await supabase.from("purchased_products").update({ last_net_package_cost: price, last_final_cost_per_unit: finalUnit, last_purchase_at: today() }).eq("id", profileResult.data.id);
+        const invoiceDate = String(purchase.invoiceDate || today());
+        if (!materialProfile.last_purchase_at || invoiceDate >= String(materialProfile.last_purchase_at)) {
+          const updateCost = await supabase.from("purchased_products").update({ last_net_package_cost: price, last_final_cost_per_unit: finalUnit, last_purchase_at: invoiceDate }).ilike("master_name", productName);
+          if (updateCost.error) throw updateCost.error;
+        }
       }
       return Response.json({ purchase: savedPurchase.data }, { status: 201 });
     }
