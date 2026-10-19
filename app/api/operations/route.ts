@@ -77,7 +77,7 @@ export async function GET() {
   try {
     const { profile, supabase } = await context();
     const productionSelect = "*, products(code,name,family,presentation,container), responsible:profiles!production_units_responsible_id_fkey(display_name), dispatch_items(dispatches(remittance_number,clients(name)))";
-    const [unitsResult, dispatchResult, paymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult] = await Promise.all([
+    const [unitsResult, dispatchResult, paymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult] = await Promise.all([
       supabase.from("production_units").select(productionSelect).order("id", { ascending: false }).limit(5000),
       supabase.from("dispatches").select("*, clients(name), dispatch_items(*, production_units(unique_code,weight_kg,units,products(code,name,family,presentation,container)))").order("id", { ascending: false }).limit(5000),
       supabase.from("customer_payments").select("*, clients(name)").order("id", { ascending: false }).limit(500),
@@ -86,8 +86,10 @@ export async function GET() {
       supabase.from("local_sales").select("*").order("id", { ascending: false }).limit(5000),
       supabase.from("purchases").select("*, suppliers(name)").order("id", { ascending: false }).limit(5000),
       supabase.from("profiles").select("*").order("display_name"),
+      supabase.from("purchased_products").select("*, suppliers(id,name)").eq("active", true).order("master_name"),
+      supabase.from("suppliers").select("id,name,tax_mode,category,active").eq("active", true).order("name"),
     ]);
-    const firstError = [unitsResult, dispatchResult, paymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult].find((r) => r.error)?.error;
+    const firstError = [unitsResult, dispatchResult, paymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult].find((r) => r.error)?.error;
     if (firstError) throw firstError;
 
     const allUnits = (unitsResult.data ?? []).map(productionRow);
@@ -107,6 +109,28 @@ export async function GET() {
       operatingExpenses: canSeeFinancials ? (expensesResult.data ?? []).map((r: Row) => ({ ...r, expenseDate: r.expense_date, createdAt: r.created_at, amount: n(r.amount) })) : [],
       localSales: canSeeFinancials ? (salesResult.data ?? []).map((r: Row) => ({ ...r, saleDate: r.sale_date, createdAt: r.created_at, amount: n(r.amount) })) : [],
       purchases: canSeeFinancials ? (purchasesResult.data ?? []).map((r: Row) => ({ ...r, supplierId: r.supplier_id, supplierName: one(r.suppliers)?.name, invoiceNumber: r.invoice_number, invoiceDate: r.invoice_date, costCenter: r.cost_center, paymentStatus: r.payment_status, netTotal: n(r.net_total), vatTotal: n(r.vat_total), grossTotal: n(r.gross_total), createdAt: r.created_at })) : [],
+      rawMaterials: canSeeCosts ? (materialsResult.data ?? []).map((r: Row) => {
+        const supplier = one(r.suppliers) as Row | null;
+        const unit = String(r.cost_unit ?? "kg");
+        const content = n(r.content_per_package);
+        const cost = n(r.last_final_cost_per_unit);
+        return {
+          id: r.id,
+          name: r.master_name,
+          supplierId: r.supplier_id,
+          supplier: supplier?.name ?? "",
+          supplierDescription: r.supplier_description,
+          unit,
+          contentPerPackage: content,
+          pack: `${content.toLocaleString("es-AR", { maximumFractionDigits: 3 })} ${unit}`,
+          vat: n(r.vat_rate),
+          cost,
+          previous: cost,
+          date: r.last_purchase_at ? new Date(`${r.last_purchase_at}T12:00:00`).toLocaleDateString("es-AR") : "Sin compras",
+          active: r.active,
+        };
+      }) : [],
+      suppliers: canSeeFinancials ? (suppliersResult.data ?? []).map((r: Row) => ({ id: r.id, name: r.name, taxMode: r.tax_mode, category: r.category, active: r.active })) : [],
       financialDispatches: canSeeFinancials ? allDispatches : [],
       staff: (staffResult.data ?? []).map((r: Row) => ({ id: r.id, email: r.email, displayName: r.display_name, role: r.role === "maestro_heladero" ? "produccion" : r.role === "jefe_produccion" ? "encargado" : "administracion", active: r.active })),
       currentUser: { id: profile.id, email: profile.email, displayName: profile.display_name, role, active: profile.active },
@@ -123,7 +147,7 @@ export async function POST(request: Request) {
   try {
     const { user, profile, supabase } = await context();
     const payload = await request.json() as Row;
-    const financial = ["register-purchase", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
+    const financial = ["register-purchase", "register-raw-material", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
     if (financial.includes(String(payload.action)) && profile.role !== "administracion") return Response.json({ error: "No tenés permiso para esta operación." }, { status: 403 });
 
     if (payload.action === "register-production") {
@@ -175,6 +199,53 @@ export async function POST(request: Request) {
       const updateResult = await supabase.from("production_units").update({ status: "despachado", dispatched_at: new Date().toISOString() }).in("unique_code", codes);
       if (updateResult.error) throw updateResult.error;
       return Response.json({ dispatch: dispatchRow({ ...dispatchResult.data, clients: client }) }, { status: 201 });
+    }
+
+    if (payload.action === "register-raw-material") {
+      const material = payload.material as Row;
+      const name = String(material?.name ?? "").trim();
+      const supplierName = String(material?.supplier ?? "").trim();
+      const supplierDescription = String(material?.supplierDescription ?? "").trim() || name;
+      const unit = String(material?.unit ?? "kg") === "unidad" ? "unidad" : "kg";
+      const contentPerPackage = n(material?.contentPerPackage);
+      const vatRate = [0, 10.5, 21].includes(n(material?.vat)) ? n(material?.vat) : 21;
+      if (!name || !supplierName || contentPerPackage <= 0) return Response.json({ error: "Completá nombre, proveedor y contenido por envase." }, { status: 400 });
+
+      let { data: supplier, error: supplierError } = await supabase.from("suppliers").select("id,name").eq("name", supplierName).maybeSingle();
+      if (supplierError) throw supplierError;
+      if (!supplier) {
+        const createdSupplier = await supabase.from("suppliers").insert({ name: supplierName, tax_mode: "revisar", active: true }).select("id,name").single();
+        if (createdSupplier.error) throw createdSupplier.error;
+        supplier = createdSupplier.data;
+      }
+
+      const created = await supabase.from("purchased_products").insert({
+        master_name: name,
+        supplier_id: supplier.id,
+        supplier_description: supplierDescription,
+        cost_unit: unit,
+        content_per_package: contentPerPackage,
+        vat_rate: vatRate,
+        active: true,
+      }).select("*").single();
+      if (created.error) throw created.error;
+      return Response.json({
+        material: {
+          id: created.data.id,
+          name: created.data.master_name,
+          supplierId: created.data.supplier_id,
+          supplier: supplier.name,
+          supplierDescription: created.data.supplier_description,
+          unit: created.data.cost_unit,
+          contentPerPackage: n(created.data.content_per_package),
+          pack: `${n(created.data.content_per_package).toLocaleString("es-AR", { maximumFractionDigits: 3 })} ${created.data.cost_unit}`,
+          vat: n(created.data.vat_rate),
+          cost: 0,
+          previous: 0,
+          date: "Sin compras",
+          active: created.data.active,
+        },
+      }, { status: 201 });
     }
 
     if (payload.action === "register-purchase") {
