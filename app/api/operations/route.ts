@@ -15,6 +15,15 @@ async function context() {
 const one = <T,>(value: T | T[] | null): T | null => Array.isArray(value) ? (value[0] ?? null) : value;
 const n = (value: unknown) => Number(value ?? 0);
 const today = () => new Date().toISOString().slice(0, 10);
+const roundCurrency = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+const parseInvoiceMoney = (value: unknown) => {
+  const cleaned = String(value ?? "").replace(/[^0-9,.-]/g, "");
+  if (!cleaned) return 0;
+  if (cleaned.includes(",")) return Number(cleaned.replaceAll(".", "").replace(",", ".")) || 0;
+  const dots = cleaned.match(/\./g)?.length ?? 0;
+  if (dots === 1 && /\.\d{1,2}$/.test(cleaned)) return Number(cleaned) || 0;
+  return Number(cleaned.replaceAll(".", "")) || 0;
+};
 const materialNameKey = (value: unknown) => String(value ?? "").trim().toLocaleLowerCase("es-AR");
 
 function productionRow(row: Row) {
@@ -599,32 +608,88 @@ export async function POST(request: Request) {
     }
 
     if (payload.action === "register-purchase") {
-      const purchase = payload.purchase as Row; const totals = payload.totals as Row;
+      const purchase = payload.purchase as Row;
       const lines = Array.isArray(payload.lines) ? payload.lines as Row[] : [];
       if (!purchase?.supplier || !purchase.invoice || !lines.length) return Response.json({ error: "Faltan proveedor, factura o productos." }, { status: 400 });
-      const taxMode = String(payload.supplierTaxMode).toLowerCase().includes("sin") ? "sin_iva" : String(payload.supplierTaxMode).toLowerCase().includes("con") ? "con_iva" : "revisar";
-      const supplierResult = await supabase.from("suppliers").upsert({ name: String(purchase.supplier), tax_mode: taxMode }, { onConflict: "name" }).select().single();
-      if (supplierResult.error) throw supplierResult.error;
-      const paymentStatus = String(purchase.payment).toLowerCase().includes("cuenta") ? "cuenta_corriente" : "pagada";
-      const savedPurchase = await supabase.from("purchases").insert({ supplier_id: supplierResult.data.id, invoice_number: String(purchase.invoice), invoice_date: purchase.invoiceDate || today(), cost_center: String(purchase.center ?? "Fábrica"), payment_status: paymentStatus, net_total: n(totals?.net), vat_total: n(totals?.vat), gross_total: n(totals?.gross), created_by: user.id }).select().single();
-      if (savedPurchase.error) throw savedPurchase.error;
+
+      const supplierTaxMode = String(payload.supplierTaxMode).toLowerCase();
+      const taxMode = supplierTaxMode.includes("sin") ? "sin_iva" : supplierTaxMode.includes("con") ? "con_iva" : "revisar";
+      const preparedLines: Row[] = [];
       for (const line of lines) {
         const productName = String(line.product ?? "").trim();
-        const profileResult = await supabase.from("purchased_products").select("*").ilike("master_name", productName).eq("active", true).order("last_purchase_at", { ascending: false, nullsFirst: false }).order("id", { ascending: true }).limit(1);
+        const profileResult = await supabase.from("purchased_products").select("*").eq("master_name", productName).eq("active", true).order("last_purchase_at", { ascending: false, nullsFirst: false }).order("id", { ascending: true }).limit(1);
         if (profileResult.error) throw profileResult.error;
         const materialProfile = profileResult.data?.[0];
         if (!materialProfile) return Response.json({ error: `La materia prima "${productName}" no existe. Creala antes de cargar la factura.` }, { status: 400 });
+
         const quantity = n(String(line.quantity ?? 0).replace(",", "."));
-        const price = n(String(line.price ?? 0).replace(/[^0-9.,-]/g, "").replaceAll(".", "").replace(",", "."));
-        const vatRate = taxMode === "con_iva" ? n(line.vatRate) : 0;
-        const netLine = quantity * price;
+        const enteredUnitPrice = parseInvoiceMoney(line.price);
+        if (quantity <= 0 || enteredUnitPrice <= 0) return Response.json({ error: `Revisá la cantidad y el precio de "${productName}".` }, { status: 400 });
+
+        const requestedMode = String(line.priceMode ?? "");
+        const priceMode = ["included", "excluded", "black"].includes(requestedMode) ? requestedMode : taxMode === "con_iva" ? "excluded" : "black";
+        const profileVatRate = [0, 10.5, 21].includes(n(materialProfile.vat_rate)) ? n(materialProfile.vat_rate) : 21;
+        const vatRate = priceMode === "black" ? 0 : profileVatRate;
+        const unitNet = priceMode === "included" && vatRate > 0 ? enteredUnitPrice / (1 + vatRate / 100) : enteredUnitPrice;
+        const unitGross = priceMode === "excluded" ? enteredUnitPrice * (1 + vatRate / 100) : enteredUnitPrice;
+        const netLine = roundCurrency(quantity * unitNet);
+        const grossLine = roundCurrency(quantity * unitGross);
+        const vatAmount = roundCurrency(grossLine - netLine);
         const content = Math.max(0.001, n(line.contentPerPackage) || n(materialProfile.content_per_package) || 1);
-        const finalUnit = price * (1 + vatRate / 100) / content;
-        const itemResult = await supabase.from("purchase_items").insert({ purchase_id: savedPurchase.data.id, purchased_product_id: materialProfile.id, quantity, net_package_price: price, vat_rate: vatRate, vat_amount: netLine * vatRate / 100, line_total: netLine * (1 + vatRate / 100), final_cost_per_unit: finalUnit });
-        if (itemResult.error) throw itemResult.error;
-        const invoiceDate = String(purchase.invoiceDate || today());
-        if (!materialProfile.last_purchase_at || invoiceDate >= String(materialProfile.last_purchase_at)) {
-          const updateCost = await supabase.from("purchased_products").update({ last_net_package_cost: price, last_final_cost_per_unit: finalUnit, last_purchase_at: invoiceDate }).ilike("master_name", productName);
+
+        preparedLines.push({
+          productName,
+          materialProfile,
+          quantity,
+          unitNet,
+          unitGross,
+          vatRate,
+          vatAmount,
+          netLine,
+          grossLine,
+          finalUnit: unitGross / content,
+        });
+      }
+
+      const netTotal = roundCurrency(preparedLines.reduce((sum, line) => sum + n(line.netLine), 0));
+      const vatTotal = roundCurrency(preparedLines.reduce((sum, line) => sum + n(line.vatAmount), 0));
+      const grossTotal = roundCurrency(preparedLines.reduce((sum, line) => sum + n(line.grossLine), 0));
+      const supplierResult = await supabase.from("suppliers").upsert({ name: String(purchase.supplier), tax_mode: taxMode }, { onConflict: "name" }).select().single();
+      if (supplierResult.error) throw supplierResult.error;
+      const paymentStatus = String(purchase.payment).toLowerCase().includes("cuenta") ? "cuenta_corriente" : "pagada";
+      const savedPurchase = await supabase.from("purchases").insert({
+        supplier_id: supplierResult.data.id,
+        invoice_number: String(purchase.invoice),
+        invoice_date: purchase.invoiceDate || today(),
+        cost_center: String(purchase.center ?? "Fábrica"),
+        payment_status: paymentStatus,
+        net_total: netTotal,
+        vat_total: vatTotal,
+        gross_total: grossTotal,
+        created_by: user.id,
+      }).select().single();
+      if (savedPurchase.error) throw savedPurchase.error;
+
+      const itemResult = await supabase.from("purchase_items").insert(preparedLines.map((line) => ({
+        purchase_id: savedPurchase.data.id,
+        purchased_product_id: line.materialProfile.id,
+        quantity: line.quantity,
+        net_package_price: line.unitNet,
+        vat_rate: line.vatRate,
+        vat_amount: line.vatAmount,
+        line_total: line.grossLine,
+        final_cost_per_unit: line.finalUnit,
+      })));
+      if (itemResult.error) throw itemResult.error;
+
+      const invoiceDate = String(purchase.invoiceDate || today());
+      for (const line of preparedLines) {
+        if (!line.materialProfile.last_purchase_at || invoiceDate >= String(line.materialProfile.last_purchase_at)) {
+          const updateCost = await supabase.from("purchased_products").update({
+            last_net_package_cost: line.unitNet,
+            last_final_cost_per_unit: line.finalUnit,
+            last_purchase_at: invoiceDate,
+          }).eq("master_name", line.productName);
           if (updateCost.error) throw updateCost.error;
         }
       }
