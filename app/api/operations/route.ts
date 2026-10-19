@@ -77,7 +77,7 @@ export async function GET() {
   try {
     const { profile, supabase } = await context();
     const productionSelect = "*, products(code,name,family,presentation,container), responsible:profiles!production_units_responsible_id_fkey(display_name), dispatch_items(dispatches(remittance_number,clients(name)))";
-    const [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, recipesResult] = await Promise.all([
+    const [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, recipesResult, productsResult] = await Promise.all([
       supabase.from("production_units").select(productionSelect).order("id", { ascending: false }).limit(5000),
       supabase.from("dispatches").select("*, clients(name), dispatch_items(*, production_units(unique_code,weight_kg,units,products(code,name,family,presentation,container)))").order("id", { ascending: false }).limit(5000),
       supabase.from("customer_payments").select("*, clients(name)").order("id", { ascending: false }).limit(500),
@@ -89,9 +89,10 @@ export async function GET() {
       supabase.from("purchased_products").select("*, suppliers(id,name)").eq("active", true).order("master_name"),
       supabase.from("suppliers").select("id,name,tax_mode,category,active").eq("active", true).neq("name", "Catálogo interno").order("name"),
       supabase.from("supplier_payments").select("*, suppliers(name)").order("id", { ascending: false }).limit(5000),
-      supabase.from("recipes").select("*, products(code,name,family,presentation,container), recipe_items(id,purchased_product_id,quantity_kg,purchased_products(master_name,last_final_cost_per_unit,cost_unit))").eq("active", true).order("name"),
+      supabase.from("recipes").select("*, products(code,name,family,presentation,container,unit_type,tare_kg), recipe_items(id,purchased_product_id,quantity_kg,purchased_products(master_name,last_final_cost_per_unit,cost_unit))").eq("active", true).order("name"),
+      supabase.from("products").select("code,name,family,presentation,container,unit_type,tare_kg,base_price,ingredients,expiry_days").eq("active", true).order("name"),
     ]);
-    const firstError = [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, recipesResult].find((r) => r.error)?.error;
+    const firstError = [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, recipesResult, productsResult].find((r) => r.error)?.error;
     if (firstError) throw firstError;
 
     const allUnits = (unitsResult.data ?? []).map(productionRow);
@@ -188,20 +189,27 @@ export async function GET() {
           lineCost: quantity * unitCost,
         };
       });
-      const recipeCost = items.reduce((sum: number, item: Row) => sum + n(item.lineCost), 0);
-      const yieldKg = n(r.yield_kg);
+      const storedYieldKg = n(r.yield_kg) > 0 ? n(r.yield_kg) : 1;
+      const normalizedItems = items.map((item: Row) => ({
+        ...item,
+        quantityKg: n(item.quantityKg) / storedYieldKg,
+        lineCost: n(item.lineCost) / storedYieldKg,
+      }));
+      const costPerKg = normalizedItems.reduce((sum: number, item: Row) => sum + n(item.lineCost), 0);
       return {
         id: r.id,
         productCode: product?.code ?? "",
         productName: product?.name ?? r.name,
         name: r.name,
-        yieldKg,
-        batch: `${yieldKg.toLocaleString("es-AR", { maximumFractionDigits: 3 })} kg`,
-        ingredients: items.length,
-        recipe: recipeCost,
-        perKg: yieldKg > 0 ? recipeCost / yieldKg : 0,
+        yieldKg: 1,
+        batch: "1 kg",
+        ingredients: normalizedItems.length,
+        recipe: costPerKg,
+        perKg: costPerKg,
+        packageWeightKg: n(product?.tare_kg),
+        presentationCost: n(product?.tare_kg) > 0 ? costPerKg * n(product?.tare_kg) : null,
         updated: new Date(r.updated_at ?? r.created_at).toLocaleDateString("es-AR"),
-        items,
+        items: normalizedItems,
       };
     });
 
@@ -238,6 +246,18 @@ export async function GET() {
       }) : [],
       suppliers: canSeeFinancials ? supplierRows : [],
       formulas: canSeeCosts ? formulaRows : [],
+      productProfiles: canSeeCosts ? (productsResult.data ?? []).map((r: Row) => ({
+        code: String(r.code),
+        name: String(r.name),
+        family: String(r.family),
+        presentation: String(r.presentation),
+        container: String(r.container),
+        unitType: String(r.unit_type),
+        packageWeightKg: n(r.tare_kg),
+        price: n(r.base_price),
+        ingredients: String(r.ingredients ?? ""),
+        expiryDays: n(r.expiry_days),
+      })) : [],
       financialDispatches: canSeeFinancials ? allDispatches : [],
       staff: (staffResult.data ?? []).map((r: Row) => ({ id: r.id, email: r.email, displayName: r.display_name, role: r.role === "maestro_heladero" ? "produccion" : r.role === "jefe_produccion" ? "encargado" : "administracion", active: r.active })),
       currentUser: { id: profile.id, email: profile.email, displayName: profile.display_name, role, active: profile.active },
@@ -254,7 +274,7 @@ export async function POST(request: Request) {
   try {
     const { user, profile, supabase } = await context();
     const payload = await request.json() as Row;
-    const financial = ["register-purchase", "register-raw-material", "save-supplier", "register-supplier-payment", "save-recipe", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
+    const financial = ["register-purchase", "register-raw-material", "save-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
     if (financial.includes(String(payload.action)) && profile.role !== "administracion") return Response.json({ error: "No tenés permiso para esta operación." }, { status: 403 });
 
     if (payload.action === "register-production") {
@@ -351,15 +371,44 @@ export async function POST(request: Request) {
       return Response.json({ payment: saved.data }, { status: 201 });
     }
 
+    if (payload.action === "save-product-profile") {
+      const product = payload.product as Row;
+      const code = String(product?.code ?? "").trim();
+      const name = String(product?.name ?? "").trim();
+      const family = String(product?.family ?? "").trim();
+      const packageWeightKg = n(product?.packageWeightKg);
+      const needsWeight = ["postre congelado", "pastelería"].includes(family.toLocaleLowerCase("es-AR"));
+      if (!code || !name || !family) return Response.json({ error: "Completá código, nombre y familia." }, { status: 400 });
+      if (needsWeight && packageWeightKg <= 0) return Response.json({ error: "Indicá cuántos kg netos trae la presentación para poder costearla." }, { status: 400 });
+
+      const saved = await supabase.from("products").upsert({
+        code,
+        name,
+        family,
+        presentation: String(product.presentation ?? ""),
+        container: String(product.container ?? ""),
+        unit_type: family === "Helado" ? "kg" : "unidad",
+        tare_kg: Math.max(0, packageWeightKg),
+        base_price: Math.max(0, n(product.price)),
+        ingredients: String(product.ingredients ?? ""),
+        expiry_days: Math.max(1, n(product.expiryDays) || 365),
+        active: true,
+      }, { onConflict: "code" }).select("*").single();
+      if (saved.error) throw saved.error;
+      return Response.json({ product: { ...saved.data, packageWeightKg: n(saved.data.tare_kg) } });
+    }
+
     if (payload.action === "save-recipe") {
       const recipe = payload.recipe as Row;
       const productData = recipe?.product as Row;
       const productCode = String(productData?.code ?? recipe?.productCode ?? "").trim();
       const name = String(recipe?.name ?? productData?.name ?? "").trim();
-      const yieldKg = n(recipe?.yieldKg);
       const items = Array.isArray(recipe?.items) ? recipe.items as Row[] : [];
-      if (!productCode || !name || yieldKg <= 0 || !items.length) return Response.json({ error: "Elegí el producto, indicá el rendimiento y agregá al menos una materia prima." }, { status: 400 });
+      const totalQuantityKg = items.reduce((sum, item) => sum + n(item.quantityKg), 0);
+      const totalInTenThousandths = Math.round(totalQuantityKg * 10000);
+      if (!productCode || !name || !items.length) return Response.json({ error: "Elegí el producto y agregá al menos una materia prima." }, { status: 400 });
       if (items.some((item) => n(item.materialId) <= 0 || n(item.quantityKg) <= 0)) return Response.json({ error: "Revisá las materias primas y sus cantidades." }, { status: 400 });
+      if (totalInTenThousandths !== 10000) return Response.json({ error: `La fórmula debe sumar exactamente 1,0000 kg. Actualmente suma ${totalQuantityKg.toLocaleString("es-AR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} kg.` }, { status: 400 });
 
       let { data: product, error: productError } = await supabase.from("products").select("id").eq("code", productCode).maybeSingle();
       if (productError) throw productError;
@@ -382,7 +431,7 @@ export async function POST(request: Request) {
       const savedRecipe = await supabase.from("recipes").upsert({
         product_id: product.id,
         name,
-        yield_kg: yieldKg,
+        yield_kg: 1,
         active: true,
       }, { onConflict: "product_id" }).select("*").single();
       if (savedRecipe.error) throw savedRecipe.error;
