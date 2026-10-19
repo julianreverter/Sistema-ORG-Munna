@@ -15,6 +15,7 @@ async function context() {
 const one = <T,>(value: T | T[] | null): T | null => Array.isArray(value) ? (value[0] ?? null) : value;
 const n = (value: unknown) => Number(value ?? 0);
 const today = () => new Date().toISOString().slice(0, 10);
+const materialNameKey = (value: unknown) => String(value ?? "").trim().toLocaleLowerCase("es-AR");
 
 function productionRow(row: Row) {
   const product = one(row.products) as Row | null;
@@ -275,7 +276,7 @@ export async function POST(request: Request) {
   try {
     const { user, profile, supabase } = await context();
     const payload = await request.json() as Row;
-    const financial = ["register-purchase", "register-raw-material", "save-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
+    const financial = ["register-purchase", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
     if (financial.includes(String(payload.action)) && profile.role !== "administracion") return Response.json({ error: "No tenés permiso para esta operación." }, { status: 403 });
 
     if (payload.action === "register-production") {
@@ -475,6 +476,50 @@ export async function POST(request: Request) {
       })));
       if (savedItems.error) throw savedItems.error;
       return Response.json({ recipe: savedRecipe.data }, { status: 201 });
+    }
+
+    if (payload.action === "update-raw-material") {
+      const material = payload.material as Row;
+      const originalName = String(payload.originalName ?? "").trim();
+      const name = String(material?.name ?? "").trim();
+      const unit = String(material?.unit ?? "kg") === "unidad" ? "unidad" : "kg";
+      const contentPerPackage = n(material?.contentPerPackage);
+      const vatRate = [0, 10.5, 21].includes(n(material?.vat)) ? n(material?.vat) : 21;
+      if (!originalName || !name || contentPerPackage <= 0) return Response.json({ error: "Completá el nombre y un contenido por envase mayor a cero." }, { status: 400 });
+
+      const catalogResult = await supabase.from("purchased_products").select("id,master_name,active");
+      if (catalogResult.error) throw catalogResult.error;
+      const currentRows = (catalogResult.data ?? []).filter((row: Row) => materialNameKey(row.master_name) === materialNameKey(originalName));
+      if (!currentRows.length) return Response.json({ error: "La materia prima ya no existe o fue archivada." }, { status: 404 });
+      const currentIds = new Set(currentRows.map((row: Row) => n(row.id)));
+      const duplicate = (catalogResult.data ?? []).some((row: Row) => !currentIds.has(n(row.id)) && row.active !== false && materialNameKey(row.master_name) === materialNameKey(name));
+      if (duplicate) return Response.json({ error: "Ya existe otra materia prima con ese nombre." }, { status: 409 });
+
+      const ids = currentRows.map((row: Row) => n(row.id));
+      const updated = await supabase.from("purchased_products").update({
+        master_name: name,
+        cost_unit: unit,
+        content_per_package: contentPerPackage,
+        vat_rate: vatRate,
+      }).in("id", ids).select("id,master_name,cost_unit,content_per_package,vat_rate,active");
+      if (updated.error) throw updated.error;
+      return Response.json({ material: updated.data?.[0], updatedRows: updated.data?.length ?? 0 });
+    }
+
+    if (payload.action === "archive-raw-material") {
+      const name = String(payload.name ?? "").trim();
+      if (!name) return Response.json({ error: "Falta la materia prima a archivar." }, { status: 400 });
+
+      const catalogResult = await supabase.from("purchased_products").select("id,master_name,active");
+      if (catalogResult.error) throw catalogResult.error;
+      const ids = (catalogResult.data ?? [])
+        .filter((row: Row) => row.active !== false && materialNameKey(row.master_name) === materialNameKey(name))
+        .map((row: Row) => n(row.id));
+      if (!ids.length) return Response.json({ error: "La materia prima ya no existe o ya fue archivada." }, { status: 404 });
+
+      const archived = await supabase.from("purchased_products").update({ active: false }).in("id", ids).select("id,master_name,active");
+      if (archived.error) throw archived.error;
+      return Response.json({ archivedRows: archived.data?.length ?? 0 });
     }
 
     if (payload.action === "register-raw-material") {
