@@ -403,7 +403,7 @@ export async function POST(request: Request) {
   try {
     const { user, profile, supabase } = await context();
     const payload = await request.json() as Row;
-    const financial = ["register-purchase", "update-purchase", "delete-purchase", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "update-supplier", "archive-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
+    const financial = ["register-purchase", "update-purchase", "delete-purchase", "mark-purchase-paid", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "update-supplier", "archive-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
     if (financial.includes(String(payload.action)) && profile.role !== "administracion") return Response.json({ error: "No tenés permiso para esta operación." }, { status: 403 });
 
     if (payload.action === "register-production") {
@@ -745,6 +745,15 @@ export async function POST(request: Request) {
       if (!deleted.data) return Response.json({ error: "La factura ya no existe." }, { status: 404 });
       await refreshFactoryMaterialCosts(supabase, affectedNames);
       return Response.json({ deleted: true });
+    }
+
+    if (payload.action === "mark-purchase-paid") {
+      const purchaseId = n(payload.purchaseId);
+      if (!purchaseId) return Response.json({ error: "Falta la factura a marcar como pagada." }, { status: 400 });
+      const result = await supabase.from("purchases").update({ payment_status: "pagada" }).eq("id", purchaseId).select("id,payment_status").maybeSingle();
+      if (result.error) throw result.error;
+      if (!result.data) return Response.json({ error: "La factura ya no existe." }, { status: 404 });
+      return Response.json({ purchase: result.data });
     }
 
     if (payload.action === "register-purchase" || payload.action === "update-purchase") {
