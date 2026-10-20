@@ -2411,6 +2411,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
   const [purchaseDetailOpen, setPurchaseDetailOpen] = useState(false);
   const [editingPurchaseId, setEditingPurchaseId] = useState<number | null>(null);
   const [deletingPurchase, setDeletingPurchase] = useState(false);
+  const [payingPurchaseId, setPayingPurchaseId] = useState<number | null>(null);
   const [purchaseActionError, setPurchaseActionError] = useState("");
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [savingPayment, setSavingPayment] = useState(false);
@@ -2853,6 +2854,26 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
     setPurchaseOpen(true);
   };
 
+  const markPurchasePaid = async (row: CostPurchaseRow) => {
+    if (!window.confirm(`¿Marcar la factura ${row.invoice} de ${row.supplier} como pagada?`)) return;
+    setPayingPurchaseId(row.id);
+    setPurchaseActionError("");
+    try {
+      const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "mark-purchase-paid", purchaseId: row.id }) });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "No se pudo marcar la factura como pagada.");
+      await loadCostData();
+      if (selectedPurchase?.id === row.id) {
+        setPurchaseDetailOpen(false);
+        setSelectedPurchase(null);
+      }
+    } catch (error) {
+      setPurchaseActionError(error instanceof Error ? error.message : "No se pudo marcar la factura como pagada.");
+    } finally {
+      setPayingPurchaseId(null);
+    }
+  };
+
   const deletePurchase = async (row: CostPurchaseRow) => {
     setDeletingPurchase(true);
     setPurchaseActionError("");
@@ -2996,7 +3017,8 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
 
       {tab === "vencimientos" && <div className="space-y-5">
         <div className="grid gap-4 md:grid-cols-3"><div className="rounded-3xl border border-red-200 bg-red-50 p-5"><p className="text-sm font-bold text-red-700">Vencidas</p><p className="mt-1 text-3xl font-black text-red-900">{overdueInvoices.length}</p></div><div className="rounded-3xl border border-amber-200 bg-amber-50 p-5"><p className="text-sm font-bold text-amber-700">Vencen en hasta 5 días</p><p className="mt-1 text-3xl font-black text-amber-900">{dueSoonInvoices.length}</p></div><div className="rounded-3xl border bg-white p-5"><p className="text-sm font-bold text-muted-foreground">Próximas</p><p className="mt-1 text-3xl font-black">{futureDueInvoices.length}</p></div></div>
-        {([{title:"Facturas vencidas",rows:overdueInvoices,tone:"text-red-700",empty:"No hay facturas vencidas."},{title:"Por vencer · próximos 5 días",rows:dueSoonInvoices,tone:"text-amber-700",empty:"No hay facturas por vencer dentro de los próximos 5 días."},{title:"Próximos vencimientos",rows:futureDueInvoices,tone:"text-foreground",empty:"No hay otros vencimientos futuros."}] as const).map((section)=><div key={section.title} className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="border-b p-5"><h3 className={`text-xl font-black ${section.tone}`}>{section.title}</h3></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Vencimiento</TableHead><TableHead>Factura</TableHead><TableHead>Proveedor</TableHead><TableHead className="text-right">Total</TableHead><TableHead>Estado</TableHead><TableHead className="text-right">Acción</TableHead></TableRow></TableHeader><TableBody>{section.rows.length===0&&<TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">{section.empty}</TableCell></TableRow>}{section.rows.map((row)=>{const days=invoiceDueDay(row)??0;return <TableRow key={row.id} className="cursor-pointer hover:bg-[#fff8fb]" onClick={()=>openPurchaseDetail(row)}><TableCell className="font-black">{row.dueDateDisplay}</TableCell><TableCell>{row.invoice}</TableCell><TableCell>{row.supplier}</TableCell><TableCell className="text-right font-black">{money(row.total)}</TableCell><TableCell><Badge className={days<0?"bg-red-100 text-red-700":days<=5?"bg-amber-100 text-amber-800":"bg-slate-100 text-slate-700"}>{days<0?`Vencida hace ${Math.abs(days)} día${Math.abs(days)===1?"":"s"}`:days===0?"Vence hoy":`Faltan ${days} días`}</Badge></TableCell><TableCell className="text-right"><Button variant="outline" size="sm" onClick={(event)=>{event.stopPropagation();openPurchaseDetail(row);}}>Ver factura</Button></TableCell></TableRow>})}</TableBody></Table></div></div>)}
+        {purchaseActionError && <p className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{purchaseActionError}</p>}
+        {([{title:"Facturas vencidas",rows:overdueInvoices,tone:"text-red-700",empty:"No hay facturas vencidas."},{title:"Por vencer · próximos 5 días",rows:dueSoonInvoices,tone:"text-amber-700",empty:"No hay facturas por vencer dentro de los próximos 5 días."},{title:"Próximos vencimientos",rows:futureDueInvoices,tone:"text-foreground",empty:"No hay otros vencimientos futuros."}] as const).map((section)=><div key={section.title} className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="border-b p-5"><h3 className={`text-xl font-black ${section.tone}`}>{section.title}</h3></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Vencimiento</TableHead><TableHead>Factura</TableHead><TableHead>Proveedor</TableHead><TableHead className="text-right">Total</TableHead><TableHead>Estado</TableHead><TableHead className="text-right">Acción</TableHead></TableRow></TableHeader><TableBody>{section.rows.length===0&&<TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">{section.empty}</TableCell></TableRow>}{section.rows.map((row)=>{const days=invoiceDueDay(row)??0;return <TableRow key={row.id} className="cursor-pointer hover:bg-[#fff8fb]" onClick={()=>openPurchaseDetail(row)}><TableCell className="font-black">{row.dueDateDisplay}</TableCell><TableCell>{row.invoice}</TableCell><TableCell>{row.supplier}</TableCell><TableCell className="text-right font-black">{money(row.total)}</TableCell><TableCell><Badge className={days<0?"bg-red-100 text-red-700":days<=5?"bg-amber-100 text-amber-800":"bg-slate-100 text-slate-700"}>{days<0?`Vencida hace ${Math.abs(days)} día${Math.abs(days)===1?"":"s"}`:days===0?"Vence hoy":`Faltan ${days} días`}</Badge></TableCell><TableCell className="text-right"><div className="flex justify-end gap-2"><Button variant="outline" size="sm" onClick={(event)=>{event.stopPropagation();openPurchaseDetail(row);}}>Ver factura</Button><Button size="sm" disabled={payingPurchaseId===row.id} onClick={(event)=>{event.stopPropagation();void markPurchasePaid(row);}} className="bg-emerald-600 text-white hover:bg-emerald-700"><Check className="size-4"/>{payingPurchaseId===row.id?"Guardando…":"Marcar pagada"}</Button></div></TableCell></TableRow>})}</TableBody></Table></div></div>)}
       </div>}
 
       {tab === "alertas" && <div className="space-y-5">
