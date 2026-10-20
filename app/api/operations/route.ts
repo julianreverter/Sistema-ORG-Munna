@@ -51,7 +51,7 @@ async function refreshFactoryMaterialCosts(supabase: any, requestedNames: string
   const firstError = [purchaseResult, itemResult, materialResult].find((result) => result.error)?.error;
   if (firstError) throw firstError;
 
-  const materialNameById = new Map<number, string>((materialResult.data ?? []).map((row: Row) => [n(row.id), String(row.master_name)]));
+  const materialNameById = new Map<number, string>((materialResult.data ?? []).map((row: Row) => [n(row.id), String(row.master_name)] as [number, string]));
   const itemsByPurchase = new Map<number, Row[]>();
   for (const item of (itemResult.data ?? []) as Row[]) {
     const purchaseId = n(item.purchase_id);
