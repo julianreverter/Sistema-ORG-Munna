@@ -833,7 +833,7 @@ export async function POST(request: Request) {
       const vatTotal = roundCurrency(preparedLines.reduce((sum, line) => sum + n(line.vatAmount), 0));
       const grossTotal = roundCurrency(preparedLines.reduce((sum, line) => sum + n(line.grossLine), 0));
       const allocations = preparedLines.map((line) => ({ kind: line.kind, category: line.category, center: line.center, description: line.productName, gross: line.grossLine }));
-      const dueDate = /^\\d{4}-\\d{2}-\\d{2}$/.test(String(purchase.dueDate ?? "")) ? String(purchase.dueDate) : null;
+      const dueDate = /^\d{4}-\d{2}-\d{2}$/.test(String(purchase.dueDate ?? "")) ? String(purchase.dueDate) : null;
       const encodedCostCenter = PURCHASE_ALLOCATIONS_PREFIX + JSON.stringify({ allocations, dueDate });
       const paymentStatus = String(purchase.payment).toLowerCase().includes("cuenta") ? "cuenta_corriente" : "pagada";
       const purchaseValues = {
