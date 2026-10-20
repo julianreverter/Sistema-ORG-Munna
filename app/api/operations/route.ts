@@ -393,7 +393,7 @@ export async function GET() {
       nextUniqueCode: String(lastNumeric + 1).padStart(6, "0"), mode: "supabase",
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Error inesperado";
+    const message = error instanceof Error ? error.message : typeof (error as Row)?.message === "string" ? String((error as Row).message) : "Error inesperado";
     const unauthorized = message === "UNAUTHORIZED" || message === "INACTIVE_USER";
     return Response.json({ error: unauthorized ? "Iniciá sesión para usar el sistema." : message }, { status: unauthorized ? 401 : 500 });
   }
@@ -781,12 +781,12 @@ export async function POST(request: Request) {
         const center = String(line.center ?? "Fábrica").trim() || "Fábrica";
         if (!productName) return Response.json({ error: "Todos los renglones deben tener un producto o concepto." }, { status: 400 });
 
-        let materialProfile: Row | null = null;
-        if (kind === "material") {
-          const profileResult = await supabase.from("purchased_products").select("*").eq("master_name", productName).eq("active", true).order("last_purchase_at", { ascending: false, nullsFirst: false }).order("id", { ascending: true }).limit(1);
-          if (profileResult.error) throw profileResult.error;
-          materialProfile = profileResult.data?.[0] ?? null;
-          if (!materialProfile) return Response.json({ error: `La materia prima "${productName}" no existe. Creala antes de cargar la factura.` }, { status: 400 });
+        const profileResult = await supabase.from("purchased_products").select("*").eq("master_name", productName).eq("active", true).order("last_purchase_at", { ascending: false, nullsFirst: false }).order("id", { ascending: true }).limit(1);
+        if (profileResult.error) throw new Error(profileResult.error.message);
+        const materialProfile: Row | null = profileResult.data?.[0] ?? null;
+        if (!materialProfile) return Response.json({ error: `El insumo o servicio "${productName}" no existe en el catálogo. Crealo antes de cargar la factura.` }, { status: 400 });
+
+        if (!materialProfile) return Response.json({ error: `La materia prima "${productName}" no existe. Creala antes de cargar la factura.` }, { status: 400 });
         } else {
           const requestedRate = [0, 10.5, 21].includes(n(line.vatRate)) ? n(line.vatRate) : 21;
           const syntheticDescription = `__GASTO__:${kind}:${category}:${productName}`;
@@ -799,7 +799,7 @@ export async function POST(request: Request) {
             vat_rate: requestedRate,
             active: true,
           }, { onConflict: "supplier_id,supplier_description" }).select("*").single();
-          if (syntheticResult.error) throw syntheticResult.error;
+          if (syntheticResult.error) throw new Error(syntheticResult.error.message);
           materialProfile = syntheticResult.data;
         }
         if (!materialProfile) return Response.json({ error: `No se pudo preparar el renglón "${productName}".` }, { status: 400 });
@@ -918,7 +918,7 @@ export async function POST(request: Request) {
 
     return Response.json({ error: "Operación desconocida." }, { status: 400 });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Error inesperado";
+    const message = error instanceof Error ? error.message : typeof (error as Row)?.message === "string" ? String((error as Row).message) : "Error inesperado";
     const unauthorized = message === "UNAUTHORIZED" || message === "INACTIVE_USER";
     const duplicate = message.toLowerCase().includes("duplicate") || message.toLowerCase().includes("unique");
     return Response.json({ error: unauthorized ? "Iniciá sesión para continuar." : duplicate ? "Ese registro ya existe." : message }, { status: unauthorized ? 401 : duplicate ? 409 : 500 });
