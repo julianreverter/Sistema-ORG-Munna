@@ -2930,7 +2930,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
         productCode: firstProduct?.code ?? "",
         name: firstProduct?.name ?? "",
         yieldKg: "1",
-        items: [{ materialId: materials[0]?.id ? String(materials[0].id) : "", quantityKg: "" }],
+        items: [{ materialId: formulaMaterials[0]?.id ? String(formulaMaterials[0].id) : "", quantityKg: "" }],
       });
     }
     setFormulaOpen(true);
