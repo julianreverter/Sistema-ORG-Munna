@@ -786,24 +786,6 @@ export async function POST(request: Request) {
         const materialProfile: Row | null = profileResult.data?.[0] ?? null;
         if (!materialProfile) return Response.json({ error: `El insumo o servicio "${productName}" no existe en el catálogo. Crealo antes de cargar la factura.` }, { status: 400 });
 
-        if (!materialProfile) return Response.json({ error: `La materia prima "${productName}" no existe. Creala antes de cargar la factura.` }, { status: 400 });
-        } else {
-          const requestedRate = [0, 10.5, 21].includes(n(line.vatRate)) ? n(line.vatRate) : 21;
-          const syntheticDescription = `__GASTO__:${kind}:${category}:${productName}`;
-          const syntheticResult = await supabase.from("purchased_products").upsert({
-            master_name: `__GASTO__${productName}`,
-            supplier_id: supplierResult.data.id,
-            supplier_description: syntheticDescription,
-            cost_unit: "unidad",
-            content_per_package: 1,
-            vat_rate: requestedRate,
-            active: true,
-          }, { onConflict: "supplier_id,supplier_description" }).select("*").single();
-          if (syntheticResult.error) throw new Error(syntheticResult.error.message);
-          materialProfile = syntheticResult.data;
-        }
-        if (!materialProfile) return Response.json({ error: `No se pudo preparar el renglón "${productName}".` }, { status: 400 });
-
         const quantity = n(String(line.quantity ?? 0).replace(",", "."));
         const enteredUnitPrice = parseInvoiceMoney(line.price);
         if (quantity <= 0 || enteredUnitPrice <= 0) return Response.json({ error: `Revisá la cantidad y el precio de "${productName}".` }, { status: 400 });
