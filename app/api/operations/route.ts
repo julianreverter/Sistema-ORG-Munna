@@ -42,6 +42,53 @@ const expenseCategory = (value: unknown) => {
   return allowed[normalized] ?? "Otros";
 };
 
+async function refreshFactoryMaterialCosts(supabase: any, requestedNames: string[] = []) {
+  const [purchaseResult, itemResult, materialResult] = await Promise.all([
+    supabase.from("purchases").select("id,invoice_date,cost_center").order("invoice_date", { ascending: false }).order("id", { ascending: false }).limit(5000),
+    supabase.from("purchase_items").select("id,purchase_id,purchased_product_id,net_package_price,final_cost_per_unit").order("id", { ascending: true }).limit(20000),
+    supabase.from("purchased_products").select("id,master_name").limit(10000),
+  ]);
+  const firstError = [purchaseResult, itemResult, materialResult].find((result) => result.error)?.error;
+  if (firstError) throw firstError;
+
+  const materialNameById = new Map<number, string>((materialResult.data ?? []).map((row: Row) => [n(row.id), String(row.master_name)]));
+  const itemsByPurchase = new Map<number, Row[]>();
+  for (const item of (itemResult.data ?? []) as Row[]) {
+    const purchaseId = n(item.purchase_id);
+    itemsByPurchase.set(purchaseId, [...(itemsByPurchase.get(purchaseId) ?? []), item]);
+  }
+
+  const requestedKeys = new Set(requestedNames.map(materialNameKey));
+  const latestByName = new Map<string, Row>();
+  for (const purchase of (purchaseResult.data ?? []) as Row[]) {
+    const items = itemsByPurchase.get(n(purchase.id)) ?? [];
+    const allocations = decodePurchaseAllocations(purchase.cost_center);
+    items.forEach((item, index) => {
+      const name = materialNameById.get(n(item.purchased_product_id)) ?? "";
+      const key = materialNameKey(name);
+      if (!key || (requestedKeys.size && !requestedKeys.has(key)) || String(name).startsWith("__GASTO__")) return;
+      const allocation = allocations[index];
+      const kind = allocation?.kind ?? "material";
+      const center = allocation?.center ?? purchase.cost_center;
+      if (kind !== "material" || String(center ?? "").trim().toLocaleLowerCase("es-AR") !== "fábrica" || latestByName.has(key)) return;
+      latestByName.set(key, { ...item, name, invoiceDate: purchase.invoice_date });
+    });
+  }
+
+  const namesToRefresh = requestedKeys.size
+    ? Array.from(new Set((materialResult.data ?? []).map((row: Row) => String(row.master_name)).filter((name: string) => requestedKeys.has(materialNameKey(name)))))
+    : Array.from(new Set((materialResult.data ?? []).map((row: Row) => String(row.master_name)).filter((name: string) => !name.startsWith("__GASTO__"))));
+  for (const name of namesToRefresh) {
+    const latest = latestByName.get(materialNameKey(name));
+    const update = await supabase.from("purchased_products").update({
+      last_net_package_cost: latest ? n(latest.net_package_price) : null,
+      last_final_cost_per_unit: latest ? n(latest.final_cost_per_unit) : null,
+      last_purchase_at: latest ? String(latest.invoiceDate) : null,
+    }).eq("master_name", name);
+    if (update.error) throw update.error;
+  }
+}
+
 function productionRow(row: Row) {
   const product = one(row.products) as Row | null;
   const item = one(row.dispatch_items) as Row | null;
@@ -110,7 +157,7 @@ export async function GET() {
       supabase.from("customer_account_adjustments").select("*, clients(name)").order("id", { ascending: false }).limit(500),
       supabase.from("operating_expenses").select("*").order("id", { ascending: false }).limit(5000),
       supabase.from("local_sales").select("*").order("id", { ascending: false }).limit(5000),
-      supabase.from("purchases").select("*, suppliers(name), purchase_items(vat_rate,vat_amount,line_total,purchased_product_id,purchased_products(master_name,supplier_description))").order("id", { ascending: false }).limit(5000),
+      supabase.from("purchases").select("*, suppliers(name), purchase_items(id,quantity,net_package_price,vat_rate,vat_amount,line_total,final_cost_per_unit,purchased_product_id,purchased_products(master_name,supplier_description))").order("id", { ascending: false }).limit(5000),
       supabase.from("profiles").select("*").order("display_name"),
       supabase.from("purchased_products").select("*, suppliers(id,name)").eq("active", true).order("master_name"),
       supabase.from("suppliers").select("id,name,tax_mode,category,active").eq("active", true).neq("name", "Catálogo interno").order("name"),
@@ -153,6 +200,26 @@ export async function GET() {
         description: String(allocation.description ?? "Sin detalle"),
         gross: n(allocation.gross),
       }));
+      const orderedItems = [...items].sort((a: Row, b: Row) => n(a.id) - n(b.id));
+      const lines = orderedItems.map((item: Row, index: number) => {
+        const allocation = allocations[index];
+        const purchasedProduct = one(item.purchased_products) as Row | null;
+        const vatRate = n(item.vat_rate);
+        return {
+          id: n(item.id),
+          product: allocation?.description ?? purchasedProduct?.master_name ?? purchasedProduct?.supplier_description ?? "Sin detalle",
+          quantity: n(item.quantity),
+          unitNet: n(item.net_package_price),
+          vatRate,
+          vatAmount: n(item.vat_amount),
+          total: n(item.line_total),
+          finalCostPerUnit: n(item.final_cost_per_unit),
+          kind: allocation?.kind ?? "material",
+          category: allocation?.category ?? "Materia prima",
+          center: allocation?.center ?? String(r.cost_center ?? "Fábrica"),
+          priceMode: vatRate > 0 ? "excluded" : "black",
+        };
+      });
       const centers = Array.from(new Set(allocations.map((allocation) => allocation.center)));
       const displayCenter = allocations.length ? centers.length === 1 ? centers[0] : "Mixto" : String(r.cost_center ?? "Fábrica");
       return {
@@ -167,6 +234,7 @@ export async function GET() {
         costCenter: displayCenter,
         center: displayCenter,
         allocations,
+        lines,
         paymentStatus: r.payment_status,
         status: r.payment_status === "cuenta_corriente" ? "Cuenta corriente" : "Pagado",
         netTotal: n(r.net_total),
@@ -312,7 +380,7 @@ export async function POST(request: Request) {
   try {
     const { user, profile, supabase } = await context();
     const payload = await request.json() as Row;
-    const financial = ["register-purchase", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "update-supplier", "archive-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
+    const financial = ["register-purchase", "update-purchase", "delete-purchase", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "update-supplier", "archive-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
     if (financial.includes(String(payload.action)) && profile.role !== "administracion") return Response.json({ error: "No tenés permiso para esta operación." }, { status: 403 });
 
     if (payload.action === "register-production") {
@@ -634,9 +702,31 @@ export async function POST(request: Request) {
       }, { status: 201 });
     }
 
-    if (payload.action === "register-purchase") {
+    if (payload.action === "delete-purchase") {
+      const purchaseId = n(payload.purchaseId);
+      if (!purchaseId) return Response.json({ error: "Falta la factura a eliminar." }, { status: 400 });
+      const oldItems = await supabase.from("purchase_items").select("purchased_products(master_name)").eq("purchase_id", purchaseId);
+      if (oldItems.error) throw oldItems.error;
+      const affectedNames = (oldItems.data ?? []).map((item: Row) => String(one(item.purchased_products)?.master_name ?? "")).filter(Boolean);
+      const deleteItems = await supabase.from("purchase_items").delete().eq("purchase_id", purchaseId);
+      if (deleteItems.error) throw deleteItems.error;
+      const deleted = await supabase.from("purchases").delete().eq("id", purchaseId).select("id").maybeSingle();
+      if (deleted.error) throw deleted.error;
+      if (!deleted.data) return Response.json({ error: "La factura ya no existe." }, { status: 404 });
+      await refreshFactoryMaterialCosts(supabase, affectedNames);
+      return Response.json({ deleted: true });
+    }
+
+    if (payload.action === "register-purchase" || payload.action === "update-purchase") {
       const purchase = payload.purchase as Row;
+      const purchaseId = payload.action === "update-purchase" ? n(payload.purchaseId) : 0;
       const lines = Array.isArray(payload.lines) ? payload.lines as Row[] : [];
+      let previouslyAffectedNames: string[] = [];
+      if (purchaseId) {
+        const previousItems = await supabase.from("purchase_items").select("purchased_products(master_name)").eq("purchase_id", purchaseId);
+        if (previousItems.error) throw previousItems.error;
+        previouslyAffectedNames = (previousItems.data ?? []).map((item: Row) => String(one(item.purchased_products)?.master_name ?? "")).filter(Boolean);
+      }
       if (!purchase?.supplier || !purchase.invoice || !lines.length) return Response.json({ error: "Faltan proveedor, factura o renglones." }, { status: 400 });
 
       const supplierTaxMode = String(payload.supplierTaxMode).toLowerCase();
@@ -715,7 +805,7 @@ export async function POST(request: Request) {
       const allocations = preparedLines.map((line) => ({ kind: line.kind, category: line.category, center: line.center, description: line.productName, gross: line.grossLine }));
       const encodedCostCenter = PURCHASE_ALLOCATIONS_PREFIX + JSON.stringify(allocations);
       const paymentStatus = String(purchase.payment).toLowerCase().includes("cuenta") ? "cuenta_corriente" : "pagada";
-      const savedPurchase = await supabase.from("purchases").insert({
+      const purchaseValues = {
         supplier_id: supplierResult.data.id,
         invoice_number: String(purchase.invoice),
         invoice_date: purchase.invoiceDate || today(),
@@ -725,8 +815,15 @@ export async function POST(request: Request) {
         vat_total: vatTotal,
         gross_total: grossTotal,
         created_by: user.id,
-      }).select().single();
+      };
+      const savedPurchase = purchaseId
+        ? await supabase.from("purchases").update(purchaseValues).eq("id", purchaseId).select().single()
+        : await supabase.from("purchases").insert(purchaseValues).select().single();
       if (savedPurchase.error) throw savedPurchase.error;
+      if (purchaseId) {
+        const clearedItems = await supabase.from("purchase_items").delete().eq("purchase_id", purchaseId);
+        if (clearedItems.error) throw clearedItems.error;
+      }
 
       const itemResult = await supabase.from("purchase_items").insert(preparedLines.map((line) => ({
         purchase_id: savedPurchase.data.id,
@@ -740,18 +837,9 @@ export async function POST(request: Request) {
       })));
       if (itemResult.error) throw itemResult.error;
 
-      const invoiceDate = String(purchase.invoiceDate || today());
-      for (const line of preparedLines.filter((item) => item.kind === "material" && String(item.center ?? "").trim().toLocaleLowerCase("es-AR") === "fábrica")) {
-        if (!line.materialProfile.last_purchase_at || invoiceDate >= String(line.materialProfile.last_purchase_at)) {
-          const updateCost = await supabase.from("purchased_products").update({
-            last_net_package_cost: line.unitNet,
-            last_final_cost_per_unit: line.finalUnit,
-            last_purchase_at: invoiceDate,
-          }).eq("master_name", line.productName);
-          if (updateCost.error) throw updateCost.error;
-        }
-      }
-      return Response.json({ purchase: savedPurchase.data }, { status: 201 });
+      const affectedNames = Array.from(new Set([...previouslyAffectedNames, ...preparedLines.filter((line) => line.kind === "material").map((line) => String(line.productName))]));
+      await refreshFactoryMaterialCosts(supabase, affectedNames);
+      return Response.json({ purchase: savedPurchase.data }, { status: purchaseId ? 200 : 201 });
     }
 
     if (payload.action === "register-customer-payment" || payload.action === "register-customer-adjustment") {
