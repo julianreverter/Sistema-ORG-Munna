@@ -17,6 +17,7 @@ import {
   LayoutDashboard,
   PackageCheck,
   PackagePlus,
+  Pencil,
   Plus,
   Printer,
   Scale,
@@ -24,6 +25,7 @@ import {
   Store,
   Settings,
   ShoppingBag,
+  Trash2,
   Truck,
   WalletCards,
   Users,
@@ -2297,6 +2299,7 @@ type RawMaterial = {
   date: string;
 };
 
+type PurchaseLineRecord = { id: number; product: string; quantity: number; unitNet: number; vatRate: number; vatAmount: number; total: number; finalCostPerUnit: number; kind: InvoiceLineKind; category: string; center: string; priceMode: InvoicePriceMode };
 type CostPurchaseRow = {
   id: number;
   supplierId: number;
@@ -2316,6 +2319,7 @@ type CostPurchaseRow = {
   grossTotal: number;
   costCenter: string;
   allocations?: PurchaseAllocation[];
+  lines?: PurchaseLineRecord[];
 };
 
 type SupplierCostProfile = {
@@ -2398,6 +2402,11 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
   const [savingPurchase, setSavingPurchase] = useState(false);
   const [purchaseError, setPurchaseError] = useState("");
   const [purchaseQuery, setPurchaseQuery] = useState("");
+  const [selectedPurchase, setSelectedPurchase] = useState<CostPurchaseRow | null>(null);
+  const [purchaseDetailOpen, setPurchaseDetailOpen] = useState(false);
+  const [editingPurchaseId, setEditingPurchaseId] = useState<number | null>(null);
+  const [deletingPurchase, setDeletingPurchase] = useState(false);
+  const [purchaseActionError, setPurchaseActionError] = useState("");
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [savingPayment, setSavingPayment] = useState(false);
   const [paymentError, setPaymentError] = useState("");
@@ -2737,6 +2746,66 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
     } finally { setArchivingMaterial(""); }
   };
 
+  const openNewPurchase = (kind: InvoiceLineKind = "material") => {
+    setEditingPurchaseId(null);
+    setSelectedPurchase(null);
+    setPurchaseActionError("");
+    setPurchaseError("");
+    const supplierName = suppliers[0]?.name ?? "";
+    const supplierProfile = suppliers.find((item) => item.name === supplierName);
+    setPurchase({ supplier: supplierName, invoice: "", invoiceDate: today, center: "Fábrica", payment: "Cuenta corriente" });
+    setInvoiceLines([createInvoiceLine(defaultInvoicePriceMode(supplierProfile?.taxMode ?? "Revisar"), kind)]);
+    setPurchaseOpen(true);
+  };
+
+  const openPurchaseDetail = (row: CostPurchaseRow) => {
+    setSelectedPurchase(row);
+    setPurchaseActionError("");
+    setPurchaseDetailOpen(true);
+  };
+
+  const editPurchase = (row: CostPurchaseRow) => {
+    setEditingPurchaseId(row.id);
+    setPurchaseError("");
+    setPurchaseActionError("");
+    setPurchase({
+      supplier: row.supplier,
+      invoice: row.invoice,
+      invoiceDate: row.invoiceDate,
+      center: row.center === "Mixto" ? "Fábrica" : row.center,
+      payment: row.paymentStatus === "cuenta_corriente" ? "Cuenta corriente" : "Pagado",
+    });
+    setInvoiceLines((row.lines?.length ? row.lines : (row.allocations ?? []).map((allocation) => ({
+      id: 0, product: allocation.description, quantity: 1, unitNet: allocation.gross, vatRate: 0, vatAmount: 0, total: allocation.gross, finalCostPerUnit: allocation.gross, kind: allocation.kind, category: allocation.category, center: allocation.center, priceMode: "black" as InvoicePriceMode,
+    }))).map((line) => ({
+      product: line.product,
+      quantity: String(line.quantity).replace(".", ","),
+      price: String(line.unitNet).replace(".", ","),
+      priceMode: line.vatRate > 0 ? "excluded" : "black",
+      kind: line.kind,
+      category: line.category,
+      center: line.center,
+      vatRate: String(line.vatRate),
+    })));
+    setPurchaseDetailOpen(false);
+    setPurchaseOpen(true);
+  };
+
+  const deletePurchase = async (row: CostPurchaseRow) => {
+    setDeletingPurchase(true);
+    setPurchaseActionError("");
+    try {
+      const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete-purchase", purchaseId: row.id }) });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "No se pudo eliminar la factura.");
+      await loadCostData();
+      setPurchaseDetailOpen(false);
+      setSelectedPurchase(null);
+    } catch (error) {
+      setPurchaseActionError(error instanceof Error ? error.message : "No se pudo eliminar la factura.");
+    } finally { setDeletingPurchase(false); }
+  };
+
   const savePurchase = async () => {
     const hasInvalidLine = invoiceLines.some((line) => !line.product.trim() || !parseInvoiceAmount(line.price) || !(Number(line.quantity.replace(",", ".")) > 0) || (line.kind === "material" && !materials.some((item) => item.name === line.product)));
     if (!purchase.supplier || !purchase.invoice.trim() || !invoiceGross || hasInvalidLine) {
@@ -2746,7 +2815,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
     setSavingPurchase(true); setPurchaseError("");
     try {
       const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-        action: "register-purchase", purchase, supplierTaxMode: activeSupplier.taxMode,
+        action: editingPurchaseId != null ? "update-purchase" : "register-purchase", purchaseId: editingPurchaseId, purchase, supplierTaxMode: activeSupplier.taxMode,
         lines: invoiceLines.map((line) => {
           const profile = line.kind === "material" ? materials.find((item) => item.name === line.product) : undefined;
           return {
@@ -2762,6 +2831,8 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
       if (!response.ok) throw new Error(result.error ?? "No se pudo guardar la factura.");
       await loadCostData();
       setPurchaseOpen(false);
+      setEditingPurchaseId(null);
+      setSelectedPurchase(null);
       setPurchase((current) => ({ supplier: current.supplier, invoice: "", invoiceDate: today, center: "Fábrica", payment: "Cuenta corriente" }));
       setInvoiceLines([createInvoiceLine(defaultInvoicePriceMode(activeSupplier.taxMode))]);
     } catch (error) {
@@ -2846,7 +2917,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
     <section className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div><Badge className="rounded-full bg-[#f4d5e1] text-[#983f62] hover:bg-[#f4d5e1]">Administración</Badge><h2 className="mt-3 text-3xl font-black tracking-tight">Costos y rentabilidad</h2><p className="mt-1 text-muted-foreground">Último costo pagado, gastos por centro y costo actualizado de cada sabor.</p></div>
-        <Button onClick={() => setPurchaseOpen(true)} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Nueva factura</Button>
+        <Button onClick={() => openNewPurchase()} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Nueva factura</Button>
       </div>
       <div className="flex gap-2 overflow-x-auto rounded-2xl border bg-white p-2 shadow-sm">
         {tabs.map(([id, label, Icon]) => <button key={id} onClick={() => setTab(id)} className={`flex shrink-0 items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold transition ${tab === id ? "bg-[#3b2931] text-white" : "text-muted-foreground hover:bg-[#fff1f6]"}`}><Icon className="size-4" />{label}</button>)}
@@ -2862,12 +2933,12 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
         </div>
       </>}
 
-      {tab === "compras" && <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="flex flex-col gap-3 border-b p-5 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xl font-black">Facturas de compra</h3><p className="text-sm text-muted-foreground">Una carga por factura, con todos sus productos, IVA y condición de pago.</p></div><div className="relative w-full sm:w-72"><Search className="absolute left-3 top-3 size-4 text-muted-foreground"/><Input value={purchaseQuery} onChange={(e)=>setPurchaseQuery(e.target.value)} className="pl-9" placeholder="Buscar factura o proveedor" /></div></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Fecha / comprobante</TableHead><TableHead>Proveedor</TableHead><TableHead>Centro</TableHead><TableHead className="text-right">Neto</TableHead><TableHead className="text-right">IVA</TableHead><TableHead className="text-right">Total factura</TableHead><TableHead>Pago</TableHead></TableRow></TableHeader><TableBody>{filteredPurchases.length === 0 && <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">{purchaseQuery ? "No hay facturas que coincidan con la búsqueda." : "Todavía no hay facturas cargadas."}</TableCell></TableRow>}{filteredPurchases.map((row) => <TableRow key={row.id}><TableCell className="whitespace-nowrap"><b>{row.invoice}</b><div className="text-xs text-muted-foreground">{row.date}</div></TableCell><TableCell><b>{row.supplier}</b><div className="text-xs text-muted-foreground">{row.detail}</div></TableCell><TableCell><Badge variant="outline">{row.center}</Badge></TableCell><TableCell className="text-right">{money(row.net)}</TableCell><TableCell className="text-right">{money(row.tax)}</TableCell><TableCell className="text-right font-black">{money(row.total)}</TableCell><TableCell><Badge className={row.status === "Pagado" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}>{row.status}</Badge></TableCell></TableRow>)}</TableBody></Table></div></div>}
+      {tab === "compras" && <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="flex flex-col gap-3 border-b p-5 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xl font-black">Facturas de compra</h3><p className="text-sm text-muted-foreground">Abrí cualquier factura para consultar sus renglones, editarla o eliminarla.</p></div><div className="relative w-full sm:w-72"><Search className="absolute left-3 top-3 size-4 text-muted-foreground"/><Input value={purchaseQuery} onChange={(event) => setPurchaseQuery(event.target.value)} className="pl-9" placeholder="Buscar factura o proveedor" /></div></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Fecha / comprobante</TableHead><TableHead>Proveedor</TableHead><TableHead>Centro</TableHead><TableHead className="text-right">Neto</TableHead><TableHead className="text-right">IVA</TableHead><TableHead className="text-right">Total factura</TableHead><TableHead>Pago</TableHead><TableHead className="text-right">Acción</TableHead></TableRow></TableHeader><TableBody>{filteredPurchases.length === 0 && <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">No hay facturas que coincidan con la búsqueda.</TableCell></TableRow>}{filteredPurchases.map((row) => <TableRow key={row.id} className="cursor-pointer hover:bg-[#fff8fb]" onClick={() => openPurchaseDetail(row)}><TableCell className="whitespace-nowrap"><b>{row.invoice}</b><div className="text-xs text-muted-foreground">{row.date}</div></TableCell><TableCell><b>{row.supplier}</b><div className="text-xs text-muted-foreground">{row.detail}</div></TableCell><TableCell><Badge variant="outline">{row.center}</Badge></TableCell><TableCell className="text-right">{money(row.net)}</TableCell><TableCell className="text-right">{money(row.tax)}</TableCell><TableCell className="text-right font-black">{money(row.total)}</TableCell><TableCell><Badge className={row.status === "Pagado" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}>{row.status}</Badge></TableCell><TableCell className="text-right"><Button variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); openPurchaseDetail(row); }}>Ver detalle</Button></TableCell></TableRow>)}</TableBody></Table></div></div>}
 
       {tab === "gastos" && <div className="space-y-5">
         <div className="flex flex-col gap-4 rounded-3xl border bg-white p-6 shadow-sm lg:flex-row lg:items-center lg:justify-between">
           <div><Badge className="bg-[#f8dce7] text-[#a53d67]">Control integral</Badge><h3 className="mt-3 text-2xl font-black">Análisis de gastos</h3><p className="text-sm text-muted-foreground">Incluye materias primas, servicios y demás gastos cargados por factura, distribuidos según su destino.</p></div>
-          <Button onClick={() => { setInvoiceLines([createInvoiceLine(defaultInvoicePriceMode(activeSupplier.taxMode), "service")]); setPurchaseOpen(true); }} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Cargar nueva factura</Button>
+          <Button onClick={() => openNewPurchase("service")} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Cargar nueva factura</Button>
         </div>
         {expenseError && <div className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{expenseError}</div>}
         <div className="grid gap-3 rounded-3xl border bg-white p-5 shadow-sm md:grid-cols-2 xl:grid-cols-5">
@@ -2939,7 +3010,17 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
 
       <Dialog open={paymentOpen} onOpenChange={setPaymentOpen}><DialogContent className="sm:max-w-[620px]"><DialogHeader><DialogTitle>Registrar pago a proveedor</DialogTitle><DialogDescription>El importe se descuenta de la cuenta corriente del proveedor.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold">Proveedor<select value={payment.supplier} onChange={e=>setPayment({...payment,supplier:e.target.value})} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal">{suppliers.map(item=><option key={item.name}>{item.name}</option>)}</select></label><label className="space-y-2 text-sm font-bold">Fecha<Input type="date" value={payment.paymentDate} onChange={(e)=>setPayment({...payment,paymentDate:e.target.value})}/></label><label className="space-y-2 text-sm font-bold">Monto pagado<Input value={payment.amount} onChange={e=>setPayment({...payment,amount:e.target.value})} inputMode="numeric" placeholder="$ 0"/></label><label className="space-y-2 text-sm font-bold">Forma de pago<select value={payment.method} onChange={e=>setPayment({...payment,method:e.target.value})} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal">{["Transferencia","Efectivo","Echeq","Cheque de tercero","Mercadería"].map(item=><option key={item}>{item}</option>)}</select></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Referencia o comprobante<Input value={payment.reference} onChange={e=>setPayment({...payment,reference:e.target.value})} placeholder="N.º de transferencia, cheque o recibo"/></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Observaciones<Textarea value={payment.note} onChange={e=>setPayment({...payment,note:e.target.value})} placeholder="Ej. Pago parcial, vencimiento del echeq o detalle de la mercadería entregada"/></label></div><div className="rounded-2xl bg-[#f7f3f5] p-4 text-sm"><div className="flex justify-between"><span>Saldo actual del proveedor</span><b>{money(suppliers.find(item=>item.name===payment.supplier)?.debt ?? 0)}</b></div><div className="mt-2 flex justify-between border-t pt-2"><span>Saldo después del pago</span><b>{money((suppliers.find(item=>item.name===payment.supplier)?.debt ?? 0) - (Number(payment.amount.replace(/\D/g,"")) || 0))}</b></div></div>{paymentError && <p className="text-sm font-bold text-red-600">{paymentError}</p>}<DialogFooter><Button variant="outline" onClick={()=>setPaymentOpen(false)}>Cancelar</Button><Button disabled={savingPayment} onClick={savePayment} className="bg-[#3b2931] text-white">{savingPayment ? "Guardando…" : "Registrar pago"}</Button></DialogFooter></DialogContent></Dialog>
 
-      <Dialog open={purchaseOpen} onOpenChange={setPurchaseOpen}><DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-[1080px]"><DialogHeader><DialogTitle>Cargar factura de compra o gasto</DialogTitle><DialogDescription>Una sola factura para materias primas, servicios y otros gastos. Cada renglón puede tener un destino diferente.</DialogDescription></DialogHeader>
+      <Dialog open={purchaseDetailOpen} onOpenChange={setPurchaseDetailOpen}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[900px]"><DialogHeader><DialogTitle>Factura {selectedPurchase?.invoice}</DialogTitle><DialogDescription>Detalle completo del comprobante y su imputación contable.</DialogDescription></DialogHeader>
+        {selectedPurchase && <div className="space-y-5">
+          <div className="grid gap-3 rounded-2xl border bg-[#fff7fa] p-4 sm:grid-cols-2 lg:grid-cols-4"><div><p className="text-xs font-bold uppercase text-muted-foreground">Proveedor</p><p className="font-black">{selectedPurchase.supplier}</p></div><div><p className="text-xs font-bold uppercase text-muted-foreground">Fecha</p><p className="font-black">{selectedPurchase.date}</p></div><div><p className="text-xs font-bold uppercase text-muted-foreground">Destino</p><Badge variant="outline" className="mt-1">{selectedPurchase.center}</Badge></div><div><p className="text-xs font-bold uppercase text-muted-foreground">Condición</p><p className="font-black">{selectedPurchase.status}</p></div></div>
+          <div className="overflow-hidden rounded-2xl border"><Table><TableHeader><TableRow><TableHead>Tipo / detalle</TableHead><TableHead>Destino</TableHead><TableHead className="text-right">Cantidad</TableHead><TableHead className="text-right">Precio neto unit.</TableHead><TableHead className="text-right">IVA</TableHead><TableHead className="text-right">Total</TableHead></TableRow></TableHeader><TableBody>{(selectedPurchase.lines ?? []).map((line) => <TableRow key={line.id}><TableCell><div className="font-bold">{line.product}</div><div className="text-xs text-muted-foreground">{line.kind === "material" ? "Materia prima" : line.kind === "service" ? "Servicio" : "Otro gasto"} · {line.category}</div></TableCell><TableCell><Badge variant="outline">{line.center}</Badge></TableCell><TableCell className="text-right">{line.quantity.toLocaleString("es-AR")}</TableCell><TableCell className="text-right">{invoiceMoney(line.unitNet)}</TableCell><TableCell className="text-right">{invoiceMoney(line.vatAmount)}</TableCell><TableCell className="text-right font-black">{invoiceMoney(line.total)}</TableCell></TableRow>)}{!selectedPurchase.lines?.length && <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">Esta factura anterior no tiene el detalle de renglones disponible.</TableCell></TableRow>}</TableBody></Table></div>
+          <div className="ml-auto w-full max-w-sm space-y-2 rounded-2xl bg-[#f7f3f5] p-4 text-sm"><div className="flex justify-between"><span>Neto</span><b>{invoiceMoney(selectedPurchase.net)}</b></div><div className="flex justify-between"><span>IVA</span><b>{invoiceMoney(selectedPurchase.tax)}</b></div><div className="flex justify-between border-t pt-3 text-lg"><span>Total</span><b>{invoiceMoney(selectedPurchase.total)}</b></div></div>
+        </div>}
+        {purchaseActionError && <p className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{purchaseActionError}</p>}
+        <DialogFooter className="gap-2 sm:justify-between"><AlertDialog><AlertDialogTrigger asChild><Button variant="outline" className="border-red-200 text-red-700 hover:bg-red-50"><Trash2 className="size-4"/> Eliminar</Button></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>¿Eliminar esta factura?</AlertDialogTitle><AlertDialogDescription>Se quitará de la cuenta corriente, IVA, análisis de gastos y costos. Esta acción no se puede deshacer.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancelar</AlertDialogCancel><AlertDialogAction disabled={deletingPurchase} onClick={() => selectedPurchase && deletePurchase(selectedPurchase)} className="bg-red-600 text-white hover:bg-red-700">{deletingPurchase ? "Eliminando…" : "Sí, eliminar factura"}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog><div className="flex gap-2"><Button variant="outline" onClick={() => setPurchaseDetailOpen(false)}>Cerrar</Button><Button onClick={() => selectedPurchase && editPurchase(selectedPurchase)} className="bg-[#3b2931] text-white"><Pencil className="size-4"/> Editar factura</Button></div></DialogFooter>
+      </DialogContent></Dialog>
+
+      <Dialog open={purchaseOpen} onOpenChange={setPurchaseOpen}><DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-[1080px]"><DialogHeader><DialogTitle>{editingPurchaseId != null ? "Editar factura" : "Cargar factura de compra o gasto"}</DialogTitle><DialogDescription>{editingPurchaseId != null ? "Corregí los datos o renglones necesarios. Los saldos y costos se recalcularán al guardar." : "Una sola factura para materias primas, servicios y otros gastos. Cada renglón puede tener un destino diferente."}</DialogDescription></DialogHeader>
         <div className="grid gap-4 py-2 sm:grid-cols-2 lg:grid-cols-4">
           <label className="space-y-2 text-sm font-bold lg:col-span-2">Proveedor<select value={purchase.supplier} onChange={e => { const supplierName=e.target.value; const supplierProfile=suppliers.find((item)=>item.name===supplierName); const priceMode=defaultInvoicePriceMode(supplierProfile?.taxMode ?? "Revisar"); setPurchase({...purchase,supplier:supplierName}); setInvoiceLines((lines)=>lines.map((line)=>({...line,priceMode}))); }} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal"><option value="">Seleccionar…</option>{suppliers.map(x=><option key={x.name}>{x.name}</option>)}</select></label>
           <label className="space-y-2 text-sm font-bold">Fecha<Input type="date" value={purchase.invoiceDate} onChange={(e)=>setPurchase({...purchase,invoiceDate:e.target.value})}/></label>
@@ -2965,7 +3046,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
         <div className="mt-2 grid gap-4 sm:grid-cols-2"><div className="rounded-xl border bg-slate-50 p-3 text-xs text-muted-foreground"><b className="text-foreground">Compras repartidas:</b> repetí la materia prima en otro renglón, indicá la cantidad correspondiente y elegí otro destino.</div><label className="space-y-2 text-sm font-bold">Condición de pago<select value={purchase.payment} onChange={e => setPurchase({...purchase, payment:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option>Pagado</option><option>Cuenta corriente</option></select></label></div>
         <div className="ml-auto mt-3 w-full max-w-sm space-y-2 rounded-2xl bg-[#f7f3f5] p-4 text-sm"><div className="flex justify-between"><span>Neto</span><b>{invoiceMoney(invoiceNet)}</b></div>{invoiceVat21 > 0 && <div className="flex justify-between text-xs"><span>IVA 21% · crédito fiscal</span><b>{invoiceMoney(invoiceVat21)}</b></div>}{invoiceVat105 > 0 && <div className="flex justify-between text-xs"><span>IVA 10,5% · crédito fiscal</span><b>{invoiceMoney(invoiceVat105)}</b></div>}<div className="flex justify-between"><span>IVA automático total</span><b>{invoiceMoney(invoiceTax)}</b></div><div className="flex justify-between border-t pt-3 text-lg"><span>Total factura</span><b>{invoiceMoney(invoiceGross)}</b></div>{purchase.payment === "Cuenta corriente" && <p className="text-xs text-amber-700">Se sumará automáticamente al saldo del proveedor.</p>}</div>
         {purchaseError && <p className="text-sm font-bold text-red-600">{purchaseError}</p>}
-        <DialogFooter><Button variant="outline" onClick={()=>setPurchaseOpen(false)}>Cancelar</Button><Button disabled={savingPurchase} onClick={savePurchase} className="bg-[#3b2931] text-white">{savingPurchase ? "Guardando…" : "Guardar factura completa"}</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={()=>{ setPurchaseOpen(false); setEditingPurchaseId(null); }}>Cancelar</Button><Button disabled={savingPurchase} onClick={savePurchase} className="bg-[#3b2931] text-white">{savingPurchase ? "Guardando…" : editingPurchaseId != null ? "Guardar cambios" : "Guardar factura completa"}</Button></DialogFooter>
       </DialogContent></Dialog>
     </section>
   );
