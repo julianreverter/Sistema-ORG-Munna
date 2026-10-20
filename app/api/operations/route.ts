@@ -26,6 +26,18 @@ const parseInvoiceMoney = (value: unknown) => {
 };
 const materialNameKey = (value: unknown) => String(value ?? "").trim().toLocaleLowerCase("es-AR");
 const PURCHASE_ALLOCATIONS_PREFIX = "__MUNNA_ALLOCATIONS__:";
+const COST_CATALOG_PREFIX = "__MUNNA_CATALOG__:";
+const catalogMeta = (row: Row) => {
+  const raw = String(row.supplier_description ?? "");
+  if (!raw.startsWith(COST_CATALOG_PREFIX)) return { kind: "material", category: "Materia prima" };
+  try {
+    const parsed = JSON.parse(raw.slice(COST_CATALOG_PREFIX.length));
+    const kind = ["material", "service", "expense"].includes(String(parsed.kind)) ? String(parsed.kind) : "expense";
+    return { kind, category: kind === "material" ? "Materia prima" : expenseCategory(parsed.category) };
+  } catch {
+    return { kind: "material", category: "Materia prima" };
+  }
+};
 const decodePurchaseAllocations = (value: unknown): Row[] => {
   const raw = String(value ?? "");
   if (!raw.startsWith(PURCHASE_ALLOCATIONS_PREFIX)) return [];
@@ -336,9 +348,12 @@ export async function GET() {
         const unit = String(r.cost_unit ?? "kg");
         const content = n(r.content_per_package);
         const cost = n(r.last_final_cost_per_unit);
+        const meta = catalogMeta(r);
         return {
           id: r.id,
           name: r.master_name,
+          kind: meta.kind,
+          category: meta.category,
           unit,
           contentPerPackage: content,
           pack: `${content.toLocaleString("es-AR", { maximumFractionDigits: 3 })} ${unit}`,
@@ -616,8 +631,10 @@ export async function POST(request: Request) {
       const material = payload.material as Row;
       const originalName = String(payload.originalName ?? "").trim();
       const name = String(material?.name ?? "").trim();
-      const unit = String(material?.unit ?? "kg") === "unidad" ? "unidad" : "kg";
-      const contentPerPackage = n(material?.contentPerPackage);
+      const kind = ["material", "service", "expense"].includes(String(material?.kind)) ? String(material.kind) : "material";
+      const category = kind === "material" ? "Materia prima" : expenseCategory(material?.category);
+      const unit = kind === "material" && String(material?.unit ?? "kg") !== "unidad" ? "kg" : "unidad";
+      const contentPerPackage = kind === "material" ? n(material?.contentPerPackage) : 1;
       const vatRate = [0, 10.5, 21].includes(n(material?.vat)) ? n(material?.vat) : 21;
       if (!originalName || !name || contentPerPackage <= 0) return Response.json({ error: "Completá el nombre y un contenido por envase mayor a cero." }, { status: 400 });
 
@@ -635,6 +652,7 @@ export async function POST(request: Request) {
         cost_unit: unit,
         content_per_package: contentPerPackage,
         vat_rate: vatRate,
+        supplier_description: COST_CATALOG_PREFIX + JSON.stringify({ kind, category }),
       }).in("id", ids).select("id,master_name,cost_unit,content_per_package,vat_rate,active");
       if (updated.error) throw updated.error;
       return Response.json({ material: updated.data?.[0], updatedRows: updated.data?.length ?? 0 });
@@ -659,8 +677,10 @@ export async function POST(request: Request) {
     if (payload.action === "register-raw-material") {
       const material = payload.material as Row;
       const name = String(material?.name ?? "").trim();
-      const unit = String(material?.unit ?? "kg") === "unidad" ? "unidad" : "kg";
-      const contentPerPackage = n(material?.contentPerPackage);
+      const kind = ["material", "service", "expense"].includes(String(material?.kind)) ? String(material.kind) : "material";
+      const category = kind === "material" ? "Materia prima" : expenseCategory(material?.category);
+      const unit = kind === "material" && String(material?.unit ?? "kg") !== "unidad" ? "kg" : "unidad";
+      const contentPerPackage = kind === "material" ? n(material?.contentPerPackage) : 1;
       const vatRate = [0, 10.5, 21].includes(n(material?.vat)) ? n(material?.vat) : 21;
       if (!name || contentPerPackage <= 0) return Response.json({ error: "Completá el nombre y un contenido por envase mayor a cero." }, { status: 400 });
 
@@ -679,7 +699,7 @@ export async function POST(request: Request) {
       const created = await supabase.from("purchased_products").insert({
         master_name: name,
         supplier_id: catalogSupplier.id,
-        supplier_description: name,
+        supplier_description: COST_CATALOG_PREFIX + JSON.stringify({ kind, category }),
         cost_unit: unit,
         content_per_package: contentPerPackage,
         vat_rate: vatRate,
@@ -690,6 +710,8 @@ export async function POST(request: Request) {
         material: {
           id: created.data.id,
           name: created.data.master_name,
+          kind,
+          category,
           unit: created.data.cost_unit,
           contentPerPackage: n(created.data.content_per_package),
           pack: `${n(created.data.content_per_package).toLocaleString("es-AR", { maximumFractionDigits: 3 })} ${created.data.cost_unit}`,
