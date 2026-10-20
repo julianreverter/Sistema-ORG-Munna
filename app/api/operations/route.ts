@@ -38,16 +38,21 @@ const catalogMeta = (row: Row) => {
     return { kind: "material", category: "Materia prima" };
   }
 };
-const decodePurchaseAllocations = (value: unknown): Row[] => {
+const decodePurchaseMeta = (value: unknown): { allocations: Row[]; dueDate: string | null } => {
   const raw = String(value ?? "");
-  if (!raw.startsWith(PURCHASE_ALLOCATIONS_PREFIX)) return [];
+  if (!raw.startsWith(PURCHASE_ALLOCATIONS_PREFIX)) return { allocations: [], dueDate: null };
   try {
     const parsed = JSON.parse(raw.slice(PURCHASE_ALLOCATIONS_PREFIX.length));
-    return Array.isArray(parsed) ? parsed : [];
+    if (Array.isArray(parsed)) return { allocations: parsed, dueDate: null };
+    return {
+      allocations: Array.isArray(parsed?.allocations) ? parsed.allocations : [],
+      dueDate: /^\d{4}-\d{2}-\d{2}$/.test(String(parsed?.dueDate ?? "")) ? String(parsed.dueDate) : null,
+    };
   } catch {
-    return [];
+    return { allocations: [], dueDate: null };
   }
 };
+const decodePurchaseAllocations = (value: unknown): Row[] => decodePurchaseMeta(value).allocations;
 const expenseCategory = (value: unknown) => {
   const normalized = String(value ?? "Otros").trim().toLocaleLowerCase("es-AR");
   const allowed: Record<string, string> = { servicios: "Servicios", alquileres: "Alquileres", sueldos: "Sueldos", mantenimiento: "Mantenimiento", inversiones: "Inversiones", logística: "Logística", logistica: "Logística", impuestos: "Impuestos", otros: "Otros" };
@@ -205,7 +210,8 @@ export async function GET() {
       const items = Array.isArray(r.purchase_items) ? r.purchase_items : [];
       const vat21 = items.filter((item: Row) => n(item.vat_rate) === 21).reduce((sum: number, item: Row) => sum + n(item.vat_amount), 0);
       const vat105 = items.filter((item: Row) => n(item.vat_rate) === 10.5).reduce((sum: number, item: Row) => sum + n(item.vat_amount), 0);
-      const allocations = decodePurchaseAllocations(r.cost_center).map((allocation) => ({
+      const purchaseMeta = decodePurchaseMeta(r.cost_center);
+      const allocations = purchaseMeta.allocations.map((allocation) => ({
         kind: ["material", "service", "expense"].includes(String(allocation.kind)) ? String(allocation.kind) : "expense",
         category: String(allocation.category ?? "Otros"),
         center: String(allocation.center ?? "Fábrica"),
@@ -242,6 +248,8 @@ export async function GET() {
         invoiceNumber: r.invoice_number,
         invoice: r.invoice_number,
         invoiceDate: r.invoice_date,
+        dueDate: purchaseMeta.dueDate,
+        dueDateDisplay: purchaseMeta.dueDate ? new Date(`${purchaseMeta.dueDate}T12:00:00`).toLocaleDateString("es-AR") : "Sin vencimiento",
         date: new Date(`${r.invoice_date}T12:00:00`).toLocaleDateString("es-AR"),
         costCenter: displayCenter,
         center: displayCenter,
@@ -825,7 +833,8 @@ export async function POST(request: Request) {
       const vatTotal = roundCurrency(preparedLines.reduce((sum, line) => sum + n(line.vatAmount), 0));
       const grossTotal = roundCurrency(preparedLines.reduce((sum, line) => sum + n(line.grossLine), 0));
       const allocations = preparedLines.map((line) => ({ kind: line.kind, category: line.category, center: line.center, description: line.productName, gross: line.grossLine }));
-      const encodedCostCenter = PURCHASE_ALLOCATIONS_PREFIX + JSON.stringify(allocations);
+      const dueDate = /^\\d{4}-\\d{2}-\\d{2}$/.test(String(purchase.dueDate ?? "")) ? String(purchase.dueDate) : null;
+      const encodedCostCenter = PURCHASE_ALLOCATIONS_PREFIX + JSON.stringify({ allocations, dueDate });
       const paymentStatus = String(purchase.payment).toLowerCase().includes("cuenta") ? "cuenta_corriente" : "pagada";
       const purchaseValues = {
         supplier_id: supplierResult.data.id,
