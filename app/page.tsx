@@ -2223,7 +2223,7 @@ function ProfitAndLoss() {
   </section>;
 }
 
-type CostTab = "resumen" | "compras" | "alertas" | "gastos" | "iva" | "pagos" | "proveedores" | "materias" | "formulas";
+type CostTab = "resumen" | "compras" | "vencimientos" | "alertas" | "gastos" | "iva" | "pagos" | "proveedores" | "materias" | "formulas";
 type InvoicePriceMode = "included" | "excluded" | "black";
 type InvoiceLineKind = "material" | "service" | "expense";
 type PurchaseAllocation = { kind: InvoiceLineKind; category: string; center: string; description: string; gross: number };
@@ -2309,6 +2309,8 @@ type CostPurchaseRow = {
   supplier: string;
   invoice: string;
   invoiceDate: string;
+  dueDate?: string | null;
+  dueDateDisplay?: string;
   date: string;
   detail: string;
   center: string;
@@ -2448,12 +2450,12 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
   const [savingFormula, setSavingFormula] = useState(false);
   const [formulaError, setFormulaError] = useState("");
   const [formula, setFormula] = useState<FormulaDraft>({ id: null, productCode: "", name: "", yieldKg: "1", items: [{ materialId: "", quantityKg: "" }] });
-  const [purchase, setPurchase] = useState({ supplier: "", invoice: "", invoiceDate: today, center: "Fábrica", payment: "Cuenta corriente" });
+  const [purchase, setPurchase] = useState({ supplier: "", invoice: "", invoiceDate: today, dueDate: "", center: "Fábrica", payment: "Cuenta corriente" });
   const [payment, setPayment] = useState({ supplier: "", paymentDate: today, amount: "", method: "Transferencia", reference: "", note: "" });
   const [expense, setExpense] = useState({ expenseDate: today, area: "Fábrica", category: "Servicios", concept: "", amount: "", notes: "" });
   const [invoiceLines, setInvoiceLines] = useState<InvoiceLineDraft[]>([createInvoiceLine("excluded")]);
   const tabs: [CostTab, string, typeof Calculator][] = [
-    ["resumen", "Resumen", LayoutDashboard], ["compras", "Facturas", PackagePlus], ["alertas", "Alertas de precios", AlertTriangle], ["gastos", "Análisis de gastos", Calculator], ["iva", "IVA fiscal", FileText], ["pagos", "Pagos", WalletCards],
+    ["resumen", "Resumen", LayoutDashboard], ["compras", "Facturas", PackagePlus], ["vencimientos", "Vencimientos", AlertTriangle], ["alertas", "Alertas de precios", AlertTriangle], ["gastos", "Análisis de gastos", Calculator], ["iva", "IVA fiscal", FileText], ["pagos", "Pagos", WalletCards],
     ["proveedores", "Proveedores", WalletCards], ["materias", "Insumos / Servicios", Boxes],
     ["formulas", "Fórmulas", FlaskConical],
   ];
@@ -2503,6 +2505,11 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
     const query = purchaseQuery.trim().toLowerCase();
     return !query || row.invoice.toLowerCase().includes(query) || row.supplier.toLowerCase().includes(query);
   });
+  const invoiceDueDay = (row: CostPurchaseRow) => row.dueDate ? Math.round((new Date(`${row.dueDate}T12:00:00`).getTime() - new Date(`${today}T12:00:00`).getTime()) / 86400000) : null;
+  const invoicesWithDueDate = purchases.filter((row) => row.dueDate && row.paymentStatus !== "pagada").sort((a, b) => String(a.dueDate).localeCompare(String(b.dueDate)));
+  const overdueInvoices = invoicesWithDueDate.filter((row) => Number(invoiceDueDay(row)) < 0);
+  const dueSoonInvoices = invoicesWithDueDate.filter((row) => { const days = invoiceDueDay(row); return days != null && days >= 0 && days <= 5; });
+  const futureDueInvoices = invoicesWithDueDate.filter((row) => Number(invoiceDueDay(row)) > 5);
   const uniqueMaterialPurchases = new Map<string, { product: string; purchaseId: number; invoiceDate: string; invoice: string; supplier: string; unitNet: number }>();
   purchases.forEach((purchaseRow) => {
     (purchaseRow.lines ?? []).filter((line) => line.kind === "material").forEach((line) => {
@@ -2807,7 +2814,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
     setPurchaseError("");
     const supplierName = suppliers[0]?.name ?? "";
     const supplierProfile = suppliers.find((item) => item.name === supplierName);
-    setPurchase({ supplier: supplierName, invoice: "", invoiceDate: today, center: "Fábrica", payment: "Cuenta corriente" });
+    setPurchase({ supplier: supplierName, invoice: "", invoiceDate: today, dueDate: "", center: "Fábrica", payment: "Cuenta corriente" });
     setInvoiceLines([createInvoiceLine(defaultInvoicePriceMode(supplierProfile?.taxMode ?? "Revisar"), kind)]);
     setPurchaseOpen(true);
   };
@@ -2826,6 +2833,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
       supplier: row.supplier,
       invoice: row.invoice,
       invoiceDate: row.invoiceDate,
+      dueDate: row.dueDate ?? "",
       center: row.center === "Mixto" ? "Fábrica" : row.center,
       payment: row.paymentStatus === "cuenta_corriente" ? "Cuenta corriente" : "Pagado",
     });
@@ -2887,7 +2895,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
       setPurchaseOpen(false);
       setEditingPurchaseId(null);
       setSelectedPurchase(null);
-      setPurchase((current) => ({ supplier: current.supplier, invoice: "", invoiceDate: today, center: "Fábrica", payment: "Cuenta corriente" }));
+      setPurchase((current) => ({ supplier: current.supplier, invoice: "", invoiceDate: today, dueDate: "", center: "Fábrica", payment: "Cuenta corriente" }));
       setInvoiceLines([createInvoiceLine(defaultInvoicePriceMode(activeSupplier.taxMode))]);
     } catch (error) {
       setPurchaseError(error instanceof Error ? error.message : "No se pudo guardar la factura.");
@@ -2986,6 +2994,11 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
 
       {tab === "compras" && <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="flex flex-col gap-3 border-b p-5 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xl font-black">Facturas de compra</h3><p className="text-sm text-muted-foreground">Abrí cualquier factura para consultar sus renglones, editarla o eliminarla.</p></div><div className="relative w-full sm:w-72"><Search className="absolute left-3 top-3 size-4 text-muted-foreground"/><Input value={purchaseQuery} onChange={(event) => setPurchaseQuery(event.target.value)} className="pl-9" placeholder="Buscar factura o proveedor" /></div></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Fecha / comprobante</TableHead><TableHead>Proveedor</TableHead><TableHead>Centro</TableHead><TableHead className="text-right">Neto</TableHead><TableHead className="text-right">IVA</TableHead><TableHead className="text-right">Total factura</TableHead><TableHead>Pago</TableHead><TableHead className="text-right">Acción</TableHead></TableRow></TableHeader><TableBody>{filteredPurchases.length === 0 && <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">No hay facturas que coincidan con la búsqueda.</TableCell></TableRow>}{filteredPurchases.map((row) => <TableRow key={row.id} className="cursor-pointer hover:bg-[#fff8fb]" onClick={() => openPurchaseDetail(row)}><TableCell className="whitespace-nowrap"><b>{row.invoice}</b><div className="text-xs text-muted-foreground">{row.date}</div></TableCell><TableCell><b>{row.supplier}</b><div className="text-xs text-muted-foreground">{row.detail}</div></TableCell><TableCell><Badge variant="outline">{row.center}</Badge></TableCell><TableCell className="text-right">{money(row.net)}</TableCell><TableCell className="text-right">{money(row.tax)}</TableCell><TableCell className="text-right font-black">{money(row.total)}</TableCell><TableCell><Badge className={row.status === "Pagado" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}>{row.status}</Badge></TableCell><TableCell className="text-right"><Button variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); openPurchaseDetail(row); }}>Ver detalle</Button></TableCell></TableRow>)}</TableBody></Table></div></div>}
 
+      {tab === "vencimientos" && <div className="space-y-5">
+        <div className="grid gap-4 md:grid-cols-3"><div className="rounded-3xl border border-red-200 bg-red-50 p-5"><p className="text-sm font-bold text-red-700">Vencidas</p><p className="mt-1 text-3xl font-black text-red-900">{overdueInvoices.length}</p></div><div className="rounded-3xl border border-amber-200 bg-amber-50 p-5"><p className="text-sm font-bold text-amber-700">Vencen en hasta 5 días</p><p className="mt-1 text-3xl font-black text-amber-900">{dueSoonInvoices.length}</p></div><div className="rounded-3xl border bg-white p-5"><p className="text-sm font-bold text-muted-foreground">Próximas</p><p className="mt-1 text-3xl font-black">{futureDueInvoices.length}</p></div></div>
+        {([{title:"Facturas vencidas",rows:overdueInvoices,tone:"text-red-700",empty:"No hay facturas vencidas."},{title:"Por vencer · próximos 5 días",rows:dueSoonInvoices,tone:"text-amber-700",empty:"No hay facturas por vencer dentro de los próximos 5 días."},{title:"Próximos vencimientos",rows:futureDueInvoices,tone:"text-foreground",empty:"No hay otros vencimientos futuros."}] as const).map((section)=><div key={section.title} className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="border-b p-5"><h3 className={`text-xl font-black ${section.tone}`}>{section.title}</h3></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Vencimiento</TableHead><TableHead>Factura</TableHead><TableHead>Proveedor</TableHead><TableHead className="text-right">Total</TableHead><TableHead>Estado</TableHead><TableHead className="text-right">Acción</TableHead></TableRow></TableHeader><TableBody>{section.rows.length===0&&<TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">{section.empty}</TableCell></TableRow>}{section.rows.map((row)=>{const days=invoiceDueDay(row)??0;return <TableRow key={row.id} className="cursor-pointer hover:bg-[#fff8fb]" onClick={()=>openPurchaseDetail(row)}><TableCell className="font-black">{row.dueDateDisplay}</TableCell><TableCell>{row.invoice}</TableCell><TableCell>{row.supplier}</TableCell><TableCell className="text-right font-black">{money(row.total)}</TableCell><TableCell><Badge className={days<0?"bg-red-100 text-red-700":days<=5?"bg-amber-100 text-amber-800":"bg-slate-100 text-slate-700"}>{days<0?`Vencida hace ${Math.abs(days)} día${Math.abs(days)===1?"":"s"}`:days===0?"Vence hoy":`Faltan ${days} días`}</Badge></TableCell><TableCell className="text-right"><Button variant="outline" size="sm" onClick={(event)=>{event.stopPropagation();openPurchaseDetail(row);}}>Ver factura</Button></TableCell></TableRow>})}</TableBody></Table></div></div>)}
+      </div>}
+
       {tab === "alertas" && <div className="space-y-5">
         <div className="flex flex-col gap-4 rounded-3xl border bg-white p-6 shadow-sm lg:flex-row lg:items-center lg:justify-between"><div><Badge className="bg-amber-100 text-amber-800">Control de compras</Badge><h3 className="mt-3 text-2xl font-black">Alertas de cambios de precio</h3><p className="text-sm text-muted-foreground">Compara automáticamente la última factura de cada materia prima contra su compra anterior.</p></div><div className="rounded-2xl bg-[#fff7e8] px-5 py-3 text-sm text-amber-900"><b>{priceIncreaseAlerts.length} subas detectadas</b><div className="text-xs">Revisá especialmente las variaciones altas o no informadas.</div></div></div>
         <div className="grid gap-4 sm:grid-cols-3"><div className="rounded-3xl border border-red-100 bg-red-50 p-5"><p className="text-sm font-bold text-red-700">Productos con suba</p><p className="mt-2 text-3xl font-black text-red-800">{priceIncreaseAlerts.length}</p><p className="mt-2 text-xs text-red-700">Última compra más cara</p></div><div className="rounded-3xl border border-emerald-100 bg-emerald-50 p-5"><p className="text-sm font-bold text-emerald-700">Productos con baja</p><p className="mt-2 text-3xl font-black text-emerald-800">{priceDecreaseAlerts.length}</p><p className="mt-2 text-xs text-emerald-700">Última compra más económica</p></div><div className="rounded-3xl border bg-white p-5 shadow-sm"><p className="text-sm font-bold text-muted-foreground">Suba promedio</p><p className="mt-2 text-3xl font-black">{averagePriceIncrease.toLocaleString("es-AR", { maximumFractionDigits: 1 })}%</p><p className="mt-2 text-xs text-muted-foreground">Entre los productos que aumentaron</p></div></div>
@@ -3070,7 +3083,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
 
       <Dialog open={purchaseDetailOpen} onOpenChange={setPurchaseDetailOpen}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[900px]"><DialogHeader><DialogTitle>Factura {selectedPurchase?.invoice}</DialogTitle><DialogDescription>Detalle completo del comprobante y su imputación contable.</DialogDescription></DialogHeader>
         {selectedPurchase && <div className="space-y-5">
-          <div className="grid gap-3 rounded-2xl border bg-[#fff7fa] p-4 sm:grid-cols-2 lg:grid-cols-4"><div><p className="text-xs font-bold uppercase text-muted-foreground">Proveedor</p><p className="font-black">{selectedPurchase.supplier}</p></div><div><p className="text-xs font-bold uppercase text-muted-foreground">Fecha</p><p className="font-black">{selectedPurchase.date}</p></div><div><p className="text-xs font-bold uppercase text-muted-foreground">Destino</p><Badge variant="outline" className="mt-1">{selectedPurchase.center}</Badge></div><div><p className="text-xs font-bold uppercase text-muted-foreground">Condición</p><p className="font-black">{selectedPurchase.status}</p></div></div>
+          <div className="grid gap-3 rounded-2xl border bg-[#fff7fa] p-4 sm:grid-cols-2 lg:grid-cols-4"><div><p className="text-xs font-bold uppercase text-muted-foreground">Proveedor</p><p className="font-black">{selectedPurchase.supplier}</p></div><div><p className="text-xs font-bold uppercase text-muted-foreground">Fecha</p><p className="font-black">{selectedPurchase.date}</p></div><div><p className="text-xs font-bold uppercase text-muted-foreground">Vencimiento</p><p className="font-black">{selectedPurchase.dueDateDisplay ?? "Sin vencimiento"}</p></div><div><p className="text-xs font-bold uppercase text-muted-foreground">Condición</p><p className="font-black">{selectedPurchase.status}</p></div></div>
           <div className="overflow-hidden rounded-2xl border"><Table><TableHeader><TableRow><TableHead>Tipo / detalle</TableHead><TableHead>Destino</TableHead><TableHead className="text-right">Cantidad</TableHead><TableHead className="text-right">Precio neto unit.</TableHead><TableHead className="text-right">IVA</TableHead><TableHead className="text-right">Total</TableHead></TableRow></TableHeader><TableBody>{(selectedPurchase.lines ?? []).map((line) => <TableRow key={line.id}><TableCell><div className="font-bold">{line.product}</div><div className="text-xs text-muted-foreground">{line.kind === "material" ? "Materia prima" : line.kind === "service" ? "Servicio" : "Otro gasto"} · {line.category}</div></TableCell><TableCell><Badge variant="outline">{line.center}</Badge></TableCell><TableCell className="text-right">{line.quantity.toLocaleString("es-AR")}</TableCell><TableCell className="text-right">{invoiceMoney(line.unitNet)}</TableCell><TableCell className="text-right">{invoiceMoney(line.vatAmount)}</TableCell><TableCell className="text-right font-black">{invoiceMoney(line.total)}</TableCell></TableRow>)}{!selectedPurchase.lines?.length && <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">Esta factura anterior no tiene el detalle de renglones disponible.</TableCell></TableRow>}</TableBody></Table></div>
           <div className="ml-auto w-full max-w-sm space-y-2 rounded-2xl bg-[#f7f3f5] p-4 text-sm"><div className="flex justify-between"><span>Neto</span><b>{invoiceMoney(selectedPurchase.net)}</b></div><div className="flex justify-between"><span>IVA</span><b>{invoiceMoney(selectedPurchase.tax)}</b></div><div className="flex justify-between border-t pt-3 text-lg"><span>Total</span><b>{invoiceMoney(selectedPurchase.total)}</b></div></div>
         </div>}
@@ -3083,6 +3096,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
           <label className="space-y-2 text-sm font-bold lg:col-span-2">Proveedor<select value={purchase.supplier} onChange={e => { const supplierName=e.target.value; const supplierProfile=suppliers.find((item)=>item.name===supplierName); const priceMode=defaultInvoicePriceMode(supplierProfile?.taxMode ?? "Revisar"); setPurchase({...purchase,supplier:supplierName}); setInvoiceLines((lines)=>lines.map((line)=>({...line,priceMode}))); }} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal"><option value="">Seleccionar…</option>{suppliers.map(x=><option key={x.name}>{x.name}</option>)}</select></label>
           <label className="space-y-2 text-sm font-bold">Fecha<Input type="date" value={purchase.invoiceDate} onChange={(e)=>setPurchase({...purchase,invoiceDate:e.target.value})}/></label>
           <label className="space-y-2 text-sm font-bold">N.º de factura<Input value={purchase.invoice} onChange={e => setPurchase({...purchase, invoice:e.target.value})} placeholder="FC A 0001-00001"/></label>
+          <label className="space-y-2 text-sm font-bold">Fecha de vencimiento <span className="font-normal text-muted-foreground">(opcional)</span><Input type="date" value={purchase.dueDate} onChange={(e)=>setPurchase({...purchase,dueDate:e.target.value})}/></label>
           <div className="rounded-2xl border bg-[#fff7fa] p-4 sm:col-span-2 lg:col-span-4"><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-bold uppercase text-muted-foreground">Cuenta del proveedor</p><p className="font-black">{activeSupplier.name || "Seleccioná un proveedor"}</p></div><Badge className={activeSupplier.taxMode === "Con IVA" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-700"}>{activeSupplier.taxMode}</Badge></div><p className="mt-2 text-xs text-muted-foreground">La factura alimenta la cuenta corriente y el crédito fiscal. La categoría se completa desde el catálogo y el destino se define por renglón.</p></div>
         </div>
         <div className="space-y-3"><div className="flex items-center justify-between"><h4 className="font-black">Detalle de la factura</h4><Button variant="outline" size="sm" disabled={!purchase.supplier} onClick={() => setInvoiceLines(lines => [...lines, createInvoiceLine(defaultInvoicePriceMode(activeSupplier.taxMode))])}><Plus /> Agregar renglón</Button></div>
