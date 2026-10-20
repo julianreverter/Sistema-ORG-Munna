@@ -781,6 +781,7 @@ export async function POST(request: Request) {
         const center = String(line.center ?? "Fábrica").trim() || "Fábrica";
         if (!productName) return Response.json({ error: "Todos los renglones deben tener un producto o concepto." }, { status: 400 });
 
+        // Reuse the selected catalog profile for materials, services and expenses.
         const profileResult = await supabase.from("purchased_products").select("*").eq("master_name", productName).eq("active", true).order("last_purchase_at", { ascending: false, nullsFirst: false }).order("id", { ascending: true }).limit(1);
         if (profileResult.error) throw new Error(profileResult.error.message);
         const materialProfile: Row | null = profileResult.data?.[0] ?? null;
