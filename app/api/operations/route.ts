@@ -741,7 +741,7 @@ export async function POST(request: Request) {
       if (itemResult.error) throw itemResult.error;
 
       const invoiceDate = String(purchase.invoiceDate || today());
-      for (const line of preparedLines.filter((item) => item.kind === "material")) {
+      for (const line of preparedLines.filter((item) => item.kind === "material" && String(item.center ?? "").trim().toLocaleLowerCase("es-AR") === "fábrica")) {
         if (!line.materialProfile.last_purchase_at || invoiceDate >= String(line.materialProfile.last_purchase_at)) {
           const updateCost = await supabase.from("purchased_products").update({
             last_net_package_cost: line.unitNet,
