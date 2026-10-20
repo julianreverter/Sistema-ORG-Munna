@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState, type Dispatch as StateDispatch, type SetStateAction } from "react";
 import Image from "next/image";
 import {
+  AlertTriangle,
   Archive,
   Calculator,
   Barcode,
@@ -2222,7 +2223,7 @@ function ProfitAndLoss() {
   </section>;
 }
 
-type CostTab = "resumen" | "compras" | "gastos" | "iva" | "pagos" | "proveedores" | "materias" | "formulas";
+type CostTab = "resumen" | "compras" | "alertas" | "gastos" | "iva" | "pagos" | "proveedores" | "materias" | "formulas";
 type InvoicePriceMode = "included" | "excluded" | "black";
 type InvoiceLineKind = "material" | "service" | "expense";
 type PurchaseAllocation = { kind: InvoiceLineKind; category: string; center: string; description: string; gross: number };
@@ -2450,7 +2451,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
   const [expense, setExpense] = useState({ expenseDate: today, area: "Fábrica", category: "Servicios", concept: "", amount: "", notes: "" });
   const [invoiceLines, setInvoiceLines] = useState<InvoiceLineDraft[]>([createInvoiceLine("excluded")]);
   const tabs: [CostTab, string, typeof Calculator][] = [
-    ["resumen", "Resumen", LayoutDashboard], ["compras", "Facturas", PackagePlus], ["gastos", "Análisis de gastos", Calculator], ["iva", "IVA fiscal", FileText], ["pagos", "Pagos", WalletCards],
+    ["resumen", "Resumen", LayoutDashboard], ["compras", "Facturas", PackagePlus], ["alertas", "Alertas de precios", AlertTriangle], ["gastos", "Análisis de gastos", Calculator], ["iva", "IVA fiscal", FileText], ["pagos", "Pagos", WalletCards],
     ["proveedores", "Proveedores", WalletCards], ["materias", "Materias primas", Boxes],
     ["formulas", "Fórmulas", FlaskConical],
   ];
@@ -2499,6 +2500,30 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
     const query = purchaseQuery.trim().toLowerCase();
     return !query || row.invoice.toLowerCase().includes(query) || row.supplier.toLowerCase().includes(query);
   });
+  const uniqueMaterialPurchases = new Map<string, { product: string; purchaseId: number; invoiceDate: string; invoice: string; supplier: string; unitNet: number }>();
+  purchases.forEach((purchaseRow) => {
+    (purchaseRow.lines ?? []).filter((line) => line.kind === "material").forEach((line) => {
+      const key = `${line.product.toLocaleLowerCase("es-AR")}|${purchaseRow.id}`;
+      if (!uniqueMaterialPurchases.has(key)) uniqueMaterialPurchases.set(key, { product: line.product, purchaseId: purchaseRow.id, invoiceDate: purchaseRow.invoiceDate, invoice: purchaseRow.invoice, supplier: purchaseRow.supplier, unitNet: Number(line.unitNet) });
+    });
+  });
+  const materialPriceHistory = new Map<string, Array<{ product: string; purchaseId: number; invoiceDate: string; invoice: string; supplier: string; unitNet: number }>>();
+  Array.from(uniqueMaterialPurchases.values()).forEach((entry) => {
+    const key = entry.product.toLocaleLowerCase("es-AR");
+    materialPriceHistory.set(key, [...(materialPriceHistory.get(key) ?? []), entry]);
+  });
+  const priceAlerts = Array.from(materialPriceHistory.values()).map((history) => {
+    const ordered = [...history].sort((a, b) => b.invoiceDate.localeCompare(a.invoiceDate) || b.purchaseId - a.purchaseId);
+    const current = ordered[0];
+    const previous = ordered[1];
+    if (!current || !previous || previous.unitNet <= 0) return null;
+    const difference = current.unitNet - previous.unitNet;
+    const percentage = difference / previous.unitNet * 100;
+    return { product: current.product, current, previous, difference, percentage };
+  }).filter((alert): alert is NonNullable<typeof alert> => alert != null && Math.abs(alert.percentage) >= 0.01).sort((a, b) => b.percentage - a.percentage);
+  const priceIncreaseAlerts = priceAlerts.filter((alert) => alert.difference > 0);
+  const priceDecreaseAlerts = priceAlerts.filter((alert) => alert.difference < 0);
+  const averagePriceIncrease = priceIncreaseAlerts.length ? priceIncreaseAlerts.reduce((sum, alert) => sum + alert.percentage, 0) / priceIncreaseAlerts.length : 0;
   const purchaseExpenseRows: ExpenseAnalysisRow[] = purchases.flatMap((row) => {
     const allocations = row.allocations?.length
       ? row.allocations
@@ -2955,6 +2980,13 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
       </div>}
 
       {tab === "compras" && <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="flex flex-col gap-3 border-b p-5 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xl font-black">Facturas de compra</h3><p className="text-sm text-muted-foreground">Abrí cualquier factura para consultar sus renglones, editarla o eliminarla.</p></div><div className="relative w-full sm:w-72"><Search className="absolute left-3 top-3 size-4 text-muted-foreground"/><Input value={purchaseQuery} onChange={(event) => setPurchaseQuery(event.target.value)} className="pl-9" placeholder="Buscar factura o proveedor" /></div></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Fecha / comprobante</TableHead><TableHead>Proveedor</TableHead><TableHead>Centro</TableHead><TableHead className="text-right">Neto</TableHead><TableHead className="text-right">IVA</TableHead><TableHead className="text-right">Total factura</TableHead><TableHead>Pago</TableHead><TableHead className="text-right">Acción</TableHead></TableRow></TableHeader><TableBody>{filteredPurchases.length === 0 && <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">No hay facturas que coincidan con la búsqueda.</TableCell></TableRow>}{filteredPurchases.map((row) => <TableRow key={row.id} className="cursor-pointer hover:bg-[#fff8fb]" onClick={() => openPurchaseDetail(row)}><TableCell className="whitespace-nowrap"><b>{row.invoice}</b><div className="text-xs text-muted-foreground">{row.date}</div></TableCell><TableCell><b>{row.supplier}</b><div className="text-xs text-muted-foreground">{row.detail}</div></TableCell><TableCell><Badge variant="outline">{row.center}</Badge></TableCell><TableCell className="text-right">{money(row.net)}</TableCell><TableCell className="text-right">{money(row.tax)}</TableCell><TableCell className="text-right font-black">{money(row.total)}</TableCell><TableCell><Badge className={row.status === "Pagado" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}>{row.status}</Badge></TableCell><TableCell className="text-right"><Button variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); openPurchaseDetail(row); }}>Ver detalle</Button></TableCell></TableRow>)}</TableBody></Table></div></div>}
+
+      {tab === "alertas" && <div className="space-y-5">
+        <div className="flex flex-col gap-4 rounded-3xl border bg-white p-6 shadow-sm lg:flex-row lg:items-center lg:justify-between"><div><Badge className="bg-amber-100 text-amber-800">Control de compras</Badge><h3 className="mt-3 text-2xl font-black">Alertas de cambios de precio</h3><p className="text-sm text-muted-foreground">Compara automáticamente la última factura de cada materia prima contra su compra anterior.</p></div><div className="rounded-2xl bg-[#fff7e8] px-5 py-3 text-sm text-amber-900"><b>{priceIncreaseAlerts.length} subas detectadas</b><div className="text-xs">Revisá especialmente las variaciones altas o no informadas.</div></div></div>
+        <div className="grid gap-4 sm:grid-cols-3"><div className="rounded-3xl border border-red-100 bg-red-50 p-5"><p className="text-sm font-bold text-red-700">Productos con suba</p><p className="mt-2 text-3xl font-black text-red-800">{priceIncreaseAlerts.length}</p><p className="mt-2 text-xs text-red-700">Última compra más cara</p></div><div className="rounded-3xl border border-emerald-100 bg-emerald-50 p-5"><p className="text-sm font-bold text-emerald-700">Productos con baja</p><p className="mt-2 text-3xl font-black text-emerald-800">{priceDecreaseAlerts.length}</p><p className="mt-2 text-xs text-emerald-700">Última compra más económica</p></div><div className="rounded-3xl border bg-white p-5 shadow-sm"><p className="text-sm font-bold text-muted-foreground">Suba promedio</p><p className="mt-2 text-3xl font-black">{averagePriceIncrease.toLocaleString("es-AR", { maximumFractionDigits: 1 })}%</p><p className="mt-2 text-xs text-muted-foreground">Entre los productos que aumentaron</p></div></div>
+        <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="border-b p-5"><h3 className="text-xl font-black">Último cambio por materia prima</h3><p className="text-sm text-muted-foreground">Los precios comparados son netos por unidad de compra, antes de IVA. Si cambió el proveedor, se muestran ambos.</p></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Materia prima</TableHead><TableHead>Compra anterior</TableHead><TableHead>Última compra</TableHead><TableHead className="text-right">Precio anterior</TableHead><TableHead className="text-right">Precio actual</TableHead><TableHead className="text-right">Diferencia</TableHead><TableHead className="text-right">Variación</TableHead></TableRow></TableHeader><TableBody>{priceAlerts.length === 0 && <TableRow><TableCell colSpan={7} className="py-12 text-center text-muted-foreground">Todavía no hay materias primas con dos compras distintas para comparar.</TableCell></TableRow>}{priceAlerts.map((alert) => <TableRow key={alert.product} className={alert.difference > 0 ? "bg-red-50/40" : "bg-emerald-50/30"}><TableCell className="font-black">{alert.product}</TableCell><TableCell><div className="font-medium">{alert.previous.supplier}</div><div className="text-xs text-muted-foreground">{new Date(`${alert.previous.invoiceDate}T12:00:00`).toLocaleDateString("es-AR")} · {alert.previous.invoice}</div></TableCell><TableCell><div className="font-medium">{alert.current.supplier}</div><div className="text-xs text-muted-foreground">{new Date(`${alert.current.invoiceDate}T12:00:00`).toLocaleDateString("es-AR")} · {alert.current.invoice}</div></TableCell><TableCell className="text-right">{invoiceMoney(alert.previous.unitNet)}</TableCell><TableCell className="text-right font-black">{invoiceMoney(alert.current.unitNet)}</TableCell><TableCell className={`text-right font-black ${alert.difference > 0 ? "text-red-700" : "text-emerald-700"}`}>{alert.difference > 0 ? "+" : ""}{invoiceMoney(alert.difference)}</TableCell><TableCell className="text-right"><Badge className={alert.difference > 0 ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"}>{alert.percentage > 0 ? "▲ +" : "▼ "}{alert.percentage.toLocaleString("es-AR", { maximumFractionDigits: 1 })}%</Badge></TableCell></TableRow>)}</TableBody></Table></div></div>
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><b>Cómo leerlo:</b> una suba puede deberse a un aumento real, cambio de presentación o cambio de proveedor. El sistema la marca para que puedan revisar la factura antes de darla por válida.</div>
+      </div>}
 
       {tab === "gastos" && <div className="space-y-5">
         <div className="flex flex-col gap-4 rounded-3xl border bg-white p-6 shadow-sm lg:flex-row lg:items-center lg:justify-between">
