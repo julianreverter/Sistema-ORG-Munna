@@ -27,6 +27,11 @@ const parseInvoiceMoney = (value: unknown) => {
 const materialNameKey = (value: unknown) => String(value ?? "").trim().toLocaleLowerCase("es-AR");
 const PURCHASE_ALLOCATIONS_PREFIX = "__MUNNA_ALLOCATIONS__:";
 const COST_CATALOG_PREFIX = "__MUNNA_CATALOG__:";
+const catalogDescription = (kind: string, category: string, name: string) => COST_CATALOG_PREFIX + JSON.stringify({
+  kind,
+  category,
+  catalogName: materialNameKey(name),
+});
 const catalogMeta = (row: Row) => {
   const raw = String(row.supplier_description ?? "");
   if (!raw.startsWith(COST_CATALOG_PREFIX)) return { kind: "material", category: "Materia prima" };
@@ -660,7 +665,7 @@ export async function POST(request: Request) {
         cost_unit: unit,
         content_per_package: contentPerPackage,
         vat_rate: vatRate,
-        supplier_description: COST_CATALOG_PREFIX + JSON.stringify({ kind, category }),
+        supplier_description: catalogDescription(kind, category, name),
       }).in("id", ids).select("id,master_name,cost_unit,content_per_package,vat_rate,active");
       if (updated.error) throw updated.error;
       return Response.json({ material: updated.data?.[0], updatedRows: updated.data?.length ?? 0 });
@@ -692,9 +697,22 @@ export async function POST(request: Request) {
       const vatRate = [0, 10.5, 21].includes(n(material?.vat)) ? n(material?.vat) : 21;
       if (!name || contentPerPackage <= 0) return Response.json({ error: "Completá el nombre y un contenido por envase mayor a cero." }, { status: 400 });
 
-      const existing = await supabase.from("purchased_products").select("id").ilike("master_name", name).limit(1).maybeSingle();
+      const existing = await supabase.from("purchased_products").select("id,active").ilike("master_name", name).order("active", { ascending: false }).limit(1).maybeSingle();
       if (existing.error) throw existing.error;
-      if (existing.data) return Response.json({ error: "Ya existe una materia prima con ese nombre." }, { status: 409 });
+      if (existing.data?.active !== false) return Response.json({ error: "Ya existe un insumo o servicio con ese nombre. Podés encontrarlo con el buscador." }, { status: 409 });
+
+      if (existing.data) {
+        const reactivated = await supabase.from("purchased_products").update({
+          master_name: name,
+          supplier_description: catalogDescription(kind, category, name),
+          cost_unit: unit,
+          content_per_package: contentPerPackage,
+          vat_rate: vatRate,
+          active: true,
+        }).eq("id", existing.data.id).select("*").single();
+        if (reactivated.error) throw reactivated.error;
+        return Response.json({ material: reactivated.data, reactivated: true }, { status: 201 });
+      }
 
       let { data: catalogSupplier, error: supplierError } = await supabase.from("suppliers").select("id").eq("name", "Catálogo interno").maybeSingle();
       if (supplierError) throw supplierError;
@@ -707,7 +725,7 @@ export async function POST(request: Request) {
       const created = await supabase.from("purchased_products").insert({
         master_name: name,
         supplier_id: catalogSupplier.id,
-        supplier_description: COST_CATALOG_PREFIX + JSON.stringify({ kind, category }),
+        supplier_description: catalogDescription(kind, category, name),
         cost_unit: unit,
         content_per_package: contentPerPackage,
         vat_rate: vatRate,
