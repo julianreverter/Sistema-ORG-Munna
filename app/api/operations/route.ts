@@ -699,7 +699,7 @@ export async function POST(request: Request) {
 
       const existing = await supabase.from("purchased_products").select("id,active").ilike("master_name", name).order("active", { ascending: false }).limit(1).maybeSingle();
       if (existing.error) throw existing.error;
-      if (existing.data?.active !== false) return Response.json({ error: "Ya existe un insumo o servicio con ese nombre. Podés encontrarlo con el buscador." }, { status: 409 });
+      if (existing.data && existing.data.active !== false) return Response.json({ error: "Ya existe un insumo o servicio con ese nombre. Podés encontrarlo con el buscador." }, { status: 409 });
 
       if (existing.data) {
         const reactivated = await supabase.from("purchased_products").update({
