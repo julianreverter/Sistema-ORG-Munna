@@ -60,7 +60,7 @@ const decodePurchaseMeta = (value: unknown): { allocations: Row[]; dueDate: stri
 const decodePurchaseAllocations = (value: unknown): Row[] => decodePurchaseMeta(value).allocations;
 const expenseCategory = (value: unknown) => {
   const normalized = String(value ?? "Otros").trim().toLocaleLowerCase("es-AR");
-  const allowed: Record<string, string> = { servicios: "Servicios", alquileres: "Alquileres", sueldos: "Sueldos", mantenimiento: "Mantenimiento", inversiones: "Inversiones", logística: "Logística", logistica: "Logística", impuestos: "Impuestos", otros: "Otros" };
+  const allowed: Record<string, string> = { packaging: "Packaging", servicios: "Servicios", alquileres: "Alquileres", sueldos: "Sueldos", mantenimiento: "Mantenimiento", inversiones: "Inversiones", logística: "Logística", logistica: "Logística", impuestos: "Impuestos", otros: "Otros" };
   return allowed[normalized] ?? "Otros";
 };
 
