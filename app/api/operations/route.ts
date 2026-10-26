@@ -43,13 +43,14 @@ const catalogMeta = (row: Row) => {
     return { kind: "material", category: "Materia prima" };
   }
 };
-const decodePurchaseMeta = (value: unknown): { allocations: Row[]; dueDate: string | null } => {
+const decodePurchaseMeta = (value: unknown): { allocations: Row[]; dueDate: string | null; documentType?: "credit_note" | "invoice" } => {
   const raw = String(value ?? "");
   if (!raw.startsWith(PURCHASE_ALLOCATIONS_PREFIX)) return { allocations: [], dueDate: null };
   try {
     const parsed = JSON.parse(raw.slice(PURCHASE_ALLOCATIONS_PREFIX.length));
     if (Array.isArray(parsed)) return { allocations: parsed, dueDate: null };
     return {
+      documentType: parsed?.documentType === "credit_note" ? "credit_note" : "invoice",
       allocations: Array.isArray(parsed?.allocations) ? parsed.allocations : [],
       dueDate: /^\d{4}-\d{2}-\d{2}$/.test(String(parsed?.dueDate ?? "")) ? String(parsed.dueDate) : null,
     };
@@ -83,6 +84,7 @@ async function refreshFactoryMaterialCosts(supabase: any, requestedNames: string
   const requestedKeys = new Set(requestedNames.map(materialNameKey));
   const latestByName = new Map<string, Row>();
   for (const purchase of (purchaseResult.data ?? []) as Row[]) {
+    if (decodePurchaseMeta(purchase.cost_center).documentType === "credit_note") continue;
     const items = itemsByPurchase.get(n(purchase.id)) ?? [];
     const allocations = decodePurchaseAllocations(purchase.cost_center);
     items.forEach((item, index) => {
@@ -253,6 +255,7 @@ export async function GET() {
         invoiceNumber: r.invoice_number,
         invoice: r.invoice_number,
         invoiceDate: r.invoice_date,
+        documentType: purchaseMeta.documentType ?? "invoice",
         dueDate: purchaseMeta.dueDate,
         dueDateDisplay: purchaseMeta.dueDate ? new Date(`${purchaseMeta.dueDate}T12:00:00`).toLocaleDateString("es-AR") : "Sin vencimiento",
         date: new Date(`${r.invoice_date}T12:00:00`).toLocaleDateString("es-AR"),
@@ -261,7 +264,7 @@ export async function GET() {
         allocations,
         lines,
         paymentStatus: r.payment_status,
-        status: r.payment_status === "cuenta_corriente" ? "Cuenta corriente" : "Pagado",
+        status: purchaseMeta.documentType === "credit_note" ? "Nota de crédito" : r.payment_status === "cuenta_corriente" ? "Cuenta corriente" : "Pagado",
         netTotal: n(r.net_total),
         net: n(r.net_total),
         vatTotal: n(r.vat_total),
@@ -298,8 +301,8 @@ export async function GET() {
         taxMode: r.tax_mode === "con_iva" ? "Con IVA" : r.tax_mode === "sin_iva" ? "Sin IVA" : "Revisar",
         category: r.category ?? "",
         active: r.active,
-        debt: invoiced - paid,
-        invoices: supplierPurchases.length === 1 ? "1 factura" : `${supplierPurchases.length} facturas`,
+        debt: roundCurrency(invoiced - paid),
+        invoices: `${supplierPurchases.filter((purchase: Row) => purchase.documentType !== "credit_note").length} facturas · ${supplierPurchases.filter((purchase: Row) => purchase.documentType === "credit_note").length} notas de crédito`,
         date: lastPurchase?.date ?? "Sin compras",
       };
     });
@@ -408,7 +411,7 @@ export async function POST(request: Request) {
   try {
     const { user, profile, supabase } = await context();
     const payload = await request.json() as Row;
-    const financial = ["register-purchase", "update-purchase", "delete-purchase", "mark-purchase-paid", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "update-supplier", "archive-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
+    const financial = ["register-credit-note", "register-purchase", "update-purchase", "delete-purchase", "mark-purchase-paid", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "update-supplier", "archive-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
     if (financial.includes(String(payload.action)) && profile.role !== "administracion") return Response.json({ error: "No tenés permiso para esta operación." }, { status: 403 });
 
     if (payload.action === "register-production") {
@@ -768,18 +771,27 @@ export async function POST(request: Request) {
     if (payload.action === "mark-purchase-paid") {
       const purchaseId = n(payload.purchaseId);
       if (!purchaseId) return Response.json({ error: "Falta la factura a marcar como pagada." }, { status: 400 });
+      const existing = await supabase.from("purchases").select("cost_center").eq("id", purchaseId).maybeSingle();
+      if (existing.error) throw existing.error;
+      if (decodePurchaseMeta(existing.data?.cost_center).documentType === "credit_note") return Response.json({ error: "La nota de crédito ya descuenta el saldo del proveedor; no se marca como pagada." }, { status: 400 });
       const result = await supabase.from("purchases").update({ payment_status: "pagada" }).eq("id", purchaseId).select("id,payment_status").maybeSingle();
       if (result.error) throw result.error;
       if (!result.data) return Response.json({ error: "La factura ya no existe." }, { status: 404 });
       return Response.json({ purchase: result.data });
     }
 
-    if (payload.action === "register-purchase" || payload.action === "update-purchase") {
+    if (payload.action === "register-credit-note" || payload.action === "register-purchase" || payload.action === "update-purchase") {
+      let isCreditNote = payload.action === "register-credit-note";
       const purchase = payload.purchase as Row;
       const purchaseId = payload.action === "update-purchase" ? n(payload.purchaseId) : 0;
       const lines = Array.isArray(payload.lines) ? payload.lines as Row[] : [];
       let previouslyAffectedNames: string[] = [];
+      if (payload.action === "update-purchase" && !purchaseId) return Response.json({ error: "Falta el comprobante a editar." }, { status: 400 });
       if (purchaseId) {
+        const existing = await supabase.from("purchases").select("cost_center").eq("id", purchaseId).maybeSingle();
+        if (existing.error) throw existing.error;
+        if (!existing.data) return Response.json({ error: "El comprobante ya no existe." }, { status: 404 });
+        isCreditNote = decodePurchaseMeta(existing.data.cost_center).documentType === "credit_note";
         const previousItems = await supabase.from("purchase_items").select("purchased_products(master_name)").eq("purchase_id", purchaseId);
         if (previousItems.error) throw previousItems.error;
         previouslyAffectedNames = (previousItems.data ?? []).map((item: Row) => String(one(item.purchased_products)?.master_name ?? "")).filter(Boolean);
@@ -807,7 +819,7 @@ export async function POST(request: Request) {
 
         const quantity = n(String(line.quantity ?? 0).replace(",", "."));
         const enteredUnitPrice = parseInvoiceMoney(line.price);
-        if (quantity <= 0 || enteredUnitPrice <= 0) return Response.json({ error: `Revisá la cantidad y el precio de "${productName}".` }, { status: 400 });
+        if (!Number.isFinite(quantity) || !Number.isFinite(enteredUnitPrice) || quantity <= 0 || enteredUnitPrice <= 0) return Response.json({ error: `Revisá la cantidad y el precio de "${productName}".` }, { status: 400 });
 
         const requestedMode = String(line.priceMode ?? "");
         const priceMode = ["included", "excluded", "black"].includes(requestedMode) ? requestedMode : taxMode === "con_iva" ? "excluded" : "black";
@@ -839,16 +851,17 @@ export async function POST(request: Request) {
         });
       }
 
-      const netTotal = roundCurrency(preparedLines.reduce((sum, line) => sum + n(line.netLine), 0));
-      const vatTotal = roundCurrency(preparedLines.reduce((sum, line) => sum + n(line.vatAmount), 0));
-      const grossTotal = roundCurrency(preparedLines.reduce((sum, line) => sum + n(line.grossLine), 0));
-      const allocations = preparedLines.map((line) => ({ kind: line.kind, category: line.category, center: line.center, description: line.productName, gross: line.grossLine }));
-      const dueDate = /^\d{4}-\d{2}-\d{2}$/.test(String(purchase.dueDate ?? "")) ? String(purchase.dueDate) : null;
-      const encodedCostCenter = PURCHASE_ALLOCATIONS_PREFIX + JSON.stringify({ allocations, dueDate });
-      const paymentStatus = String(purchase.payment).toLowerCase().includes("cuenta") ? "cuenta_corriente" : "pagada";
+      const sign = isCreditNote ? -1 : 1;
+      const netTotal = sign * roundCurrency(preparedLines.reduce((sum, line) => sum + n(line.netLine), 0));
+      const vatTotal = sign * roundCurrency(preparedLines.reduce((sum, line) => sum + n(line.vatAmount), 0));
+      const grossTotal = sign * roundCurrency(preparedLines.reduce((sum, line) => sum + n(line.grossLine), 0));
+      const allocations = preparedLines.map((line) => ({ kind: line.kind, category: line.category, center: line.center, description: line.productName, gross: sign * line.grossLine }));
+      const dueDate = !isCreditNote && /^\d{4}-\d{2}-\d{2}$/.test(String(purchase.dueDate ?? "")) ? String(purchase.dueDate) : null;
+      const encodedCostCenter = PURCHASE_ALLOCATIONS_PREFIX + JSON.stringify({ allocations, dueDate, documentType: isCreditNote ? "credit_note" : "invoice" });
+      const paymentStatus = isCreditNote || String(purchase.payment).toLowerCase().includes("cuenta") ? "cuenta_corriente" : "pagada";
       const purchaseValues = {
         supplier_id: supplierResult.data.id,
-        invoice_number: String(purchase.invoice),
+        invoice_number: String(purchase.invoice).trim(),
         invoice_date: purchase.invoiceDate || today(),
         cost_center: encodedCostCenter,
         payment_status: paymentStatus,
@@ -872,14 +885,21 @@ export async function POST(request: Request) {
         quantity: line.quantity,
         net_package_price: line.unitNet,
         vat_rate: line.vatRate,
-        vat_amount: line.vatAmount,
-        line_total: line.grossLine,
+        vat_amount: sign * line.vatAmount,
+        line_total: sign * line.grossLine,
         final_cost_per_unit: line.finalUnit,
       })));
-      if (itemResult.error) throw itemResult.error;
+      if (itemResult.error) {
+        // A failed new document must not leave a header that changes expenses and balances.
+        if (!purchaseId) {
+          const rollback = await supabase.from("purchases").delete().eq("id", savedPurchase.data.id);
+          if (rollback.error) throw new Error("No se pudo completar ni revertir el comprobante. Revisá el registro antes de reintentar.");
+        }
+        throw itemResult.error;
+      }
 
       const affectedNames = Array.from(new Set([...previouslyAffectedNames, ...preparedLines.filter((line) => line.kind === "material").map((line) => String(line.productName))]));
-      await refreshFactoryMaterialCosts(supabase, affectedNames);
+      if (!isCreditNote) await refreshFactoryMaterialCosts(supabase, affectedNames);
       return Response.json({ purchase: savedPurchase.data }, { status: purchaseId ? 200 : 201 });
     }
 
