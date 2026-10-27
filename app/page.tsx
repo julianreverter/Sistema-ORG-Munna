@@ -2458,6 +2458,21 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
   const [payment, setPayment] = useState({ supplier: "", paymentDate: today, amount: "", method: "Transferencia", reference: "", note: "" });
   const [expense, setExpense] = useState({ expenseDate: today, area: "Fábrica", category: "Servicios", concept: "", amount: "", notes: "" });
   const [invoiceLines, setInvoiceLines] = useState<InvoiceLineDraft[]>([createInvoiceLine("excluded")]);
+  const [purchaseBaseline, setPurchaseBaseline] = useState(() => JSON.stringify({ purchase, invoiceLines, isCreditNote }));
+  const [discardPurchaseOpen, setDiscardPurchaseOpen] = useState(false);
+  const closePurchase = () => {
+    setDiscardPurchaseOpen(false);
+    setPurchaseOpen(false);
+    setEditingPurchaseId(null);
+  };
+  const requestPurchaseClose = () => {
+    if (savingPurchase) return;
+    if (JSON.stringify({ purchase, invoiceLines, isCreditNote }) !== purchaseBaseline) {
+      setDiscardPurchaseOpen(true);
+    } else {
+      closePurchase();
+    }
+  };
   const tabs: [CostTab, string, typeof Calculator][] = [
     ["resumen", "Resumen", LayoutDashboard], ["compras", "Comprobantes", PackagePlus], ["vencimientos", "Vencimientos", AlertTriangle], ["alertas", "Alertas de precios", AlertTriangle], ["gastos", "Análisis de gastos", Calculator], ["iva", "IVA fiscal", FileText], ["pagos", "Pagos", WalletCards],
     ["proveedores", "Proveedores", WalletCards], ["materias", "Insumos / Servicios", Boxes],
@@ -2830,8 +2845,12 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
     setPurchaseError("");
     const supplierName = suppliers[0]?.name ?? "";
     const supplierProfile = suppliers.find((item) => item.name === supplierName);
-    setPurchase({ supplier: supplierName, invoice: "", invoiceDate: today, dueDate: "", center: "Fábrica", payment: "Cuenta corriente" });
-    setInvoiceLines([createInvoiceLine(defaultInvoicePriceMode(supplierProfile?.taxMode ?? "Revisar"), kind)]);
+    const nextPurchase = { supplier: supplierName, invoice: "", invoiceDate: today, dueDate: "", center: "Fábrica", payment: "Cuenta corriente" };
+    const nextLines: InvoiceLineDraft[] = [createInvoiceLine(defaultInvoicePriceMode(supplierProfile?.taxMode ?? "Revisar"), kind)];
+    setPurchase(nextPurchase);
+    setInvoiceLines(nextLines);
+    setPurchaseBaseline(JSON.stringify({ purchase: nextPurchase, invoiceLines: nextLines, isCreditNote: creditNote }));
+    setDiscardPurchaseOpen(false);
     setPurchaseOpen(true);
   };
 
@@ -2846,15 +2865,15 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
     setEditingPurchaseId(row.id);
     setPurchaseError("");
     setPurchaseActionError("");
-    setPurchase({
+    const nextPurchase = {
       supplier: row.supplier,
       invoice: row.invoice,
       invoiceDate: row.invoiceDate,
       dueDate: row.dueDate ?? "",
       center: row.center === "Mixto" ? "Fábrica" : row.center,
       payment: row.paymentStatus === "cuenta_corriente" ? "Cuenta corriente" : "Pagado",
-    });
-    setInvoiceLines((row.lines?.length ? row.lines : (row.allocations ?? []).map((allocation) => ({
+    };
+    const nextLines: InvoiceLineDraft[] = (row.lines?.length ? row.lines : (row.allocations ?? []).map((allocation) => ({
       id: 0, product: allocation.description, quantity: 1, unitNet: allocation.gross, vatRate: 0, vatAmount: 0, total: allocation.gross, finalCostPerUnit: allocation.gross, kind: allocation.kind, category: allocation.category, center: allocation.center, priceMode: "black" as InvoicePriceMode,
     }))).map((line) => ({
       product: line.product,
@@ -2865,8 +2884,12 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
       category: line.category,
       center: line.center,
       vatRate: String(line.vatRate),
-    })));
+    }));
     setPurchaseDetailOpen(false);
+    setPurchase(nextPurchase);
+    setInvoiceLines(nextLines);
+    setPurchaseBaseline(JSON.stringify({ purchase: nextPurchase, invoiceLines: nextLines, isCreditNote: row.documentType === "credit_note" }));
+    setDiscardPurchaseOpen(false);
     setPurchaseOpen(true);
   };
 
@@ -3129,7 +3152,19 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
         <DialogFooter className="gap-2 sm:justify-between"><AlertDialog><AlertDialogTrigger asChild><Button variant="outline" className="border-red-200 text-red-700 hover:bg-red-50"><Trash2 className="size-4"/> Eliminar</Button></AlertDialogTrigger><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>¿Eliminar este comprobante?</AlertDialogTitle><AlertDialogDescription>Se quitará de la cuenta corriente, IVA, análisis de gastos y costos. Esta acción no se puede deshacer.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancelar</AlertDialogCancel><AlertDialogAction disabled={deletingPurchase} onClick={() => selectedPurchase && deletePurchase(selectedPurchase)} className="bg-red-600 text-white hover:bg-red-700">{deletingPurchase ? "Eliminando…" : "Sí, eliminar comprobante"}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog><div className="flex gap-2"><Button variant="outline" onClick={() => setPurchaseDetailOpen(false)}>Cerrar</Button><Button onClick={() => selectedPurchase && editPurchase(selectedPurchase)} className="bg-[#3b2931] text-white"><Pencil className="size-4"/> Editar comprobante</Button></div></DialogFooter>
       </DialogContent></Dialog>
 
-      <Dialog open={purchaseOpen} onOpenChange={setPurchaseOpen}><DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-[1080px]"><DialogHeader><DialogTitle>{isCreditNote ? editingPurchaseId != null ? "Editar nota de crédito" : "Crear nota de crédito" : editingPurchaseId != null ? "Editar factura" : "Cargar factura de compra o gasto"}</DialogTitle><DialogDescription>{isCreditNote ? "Cargá las cantidades y precios positivos de los productos devueltos. Se descontarán del gasto y del saldo del proveedor; si corresponde, quedará saldo a favor." : editingPurchaseId != null ? "Corregí los datos o renglones necesarios. Los saldos y costos se recalcularán al guardar." : "Una sola factura para materias primas, servicios y otros gastos. Cada renglón puede tener un destino diferente."}</DialogDescription></DialogHeader>
+      <AlertDialog open={discardPurchaseOpen} onOpenChange={setDiscardPurchaseOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Querés salir sin guardar?</AlertDialogTitle>
+            <AlertDialogDescription>Tenés información cargada que se perderá si cerrás esta ventana.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Seguir cargando</AlertDialogCancel>
+            <AlertDialogAction onClick={closePurchase}>Salir sin guardar</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <Dialog open={purchaseOpen} onOpenChange={(open) => { if (!open) requestPurchaseClose(); }}><DialogContent onInteractOutside={(event) => event.preventDefault()} className="max-h-[92vh] overflow-y-auto sm:max-w-[1080px]"><DialogHeader><DialogTitle>{isCreditNote ? editingPurchaseId != null ? "Editar nota de crédito" : "Crear nota de crédito" : editingPurchaseId != null ? "Editar factura" : "Cargar factura de compra o gasto"}</DialogTitle><DialogDescription>{isCreditNote ? "Cargá las cantidades y precios positivos de los productos devueltos. Se descontarán del gasto y del saldo del proveedor; si corresponde, quedará saldo a favor." : editingPurchaseId != null ? "Corregí los datos o renglones necesarios. Los saldos y costos se recalcularán al guardar." : "Una sola factura para materias primas, servicios y otros gastos. Cada renglón puede tener un destino diferente."}</DialogDescription></DialogHeader>
         <div className="grid gap-4 py-2 sm:grid-cols-2 lg:grid-cols-5">
           <label className="space-y-2 text-sm font-bold lg:col-span-2">Proveedor<select value={purchase.supplier} onChange={e => { const supplierName=e.target.value; const supplierProfile=suppliers.find((item)=>item.name===supplierName); const priceMode=defaultInvoicePriceMode(supplierProfile?.taxMode ?? "Revisar"); setPurchase({...purchase,supplier:supplierName}); setInvoiceLines((lines)=>lines.map((line)=>({...line,priceMode}))); }} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal"><option value="">Seleccionar…</option>{suppliers.map(x=><option key={x.name}>{x.name}</option>)}</select></label>
           <label className="space-y-2 text-sm font-bold">Fecha<Input type="date" value={purchase.invoiceDate} onChange={(e)=>setPurchase({...purchase,invoiceDate:e.target.value})}/></label>
@@ -3154,7 +3189,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
         <div className="mt-2 grid gap-4 sm:grid-cols-2"><div className="rounded-xl border bg-slate-50 p-3 text-xs text-muted-foreground"><b className="text-foreground">Compras repartidas:</b> repetí la materia prima en otro renglón, indicá la cantidad correspondiente y elegí otro destino.</div><label className="space-y-2 text-sm font-bold">Condición de pago<select disabled={isCreditNote} value={isCreditNote ? "Cuenta corriente" : purchase.payment} onChange={e => setPurchase({...purchase, payment:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option>Pagado</option><option>Cuenta corriente</option></select></label></div>
         <div className="ml-auto mt-3 w-full max-w-sm space-y-2 rounded-2xl bg-[#f7f3f5] p-4 text-sm"><div className="flex justify-between"><span>Neto</span><b>{invoiceMoney(invoiceNet)}</b></div>{invoiceVat21 > 0 && <div className="flex justify-between text-xs"><span>IVA 21% · crédito fiscal</span><b>{invoiceMoney(invoiceVat21)}</b></div>}{invoiceVat105 > 0 && <div className="flex justify-between text-xs"><span>IVA 10,5% · crédito fiscal</span><b>{invoiceMoney(invoiceVat105)}</b></div>}<div className="flex justify-between"><span>IVA automático total</span><b>{invoiceMoney(invoiceTax)}</b></div><div className="flex justify-between border-t pt-3 text-lg"><span>{isCreditNote ? "Total a descontar" : "Total factura"}</span><b>{invoiceMoney(invoiceGross)}</b></div>{purchase.payment === "Cuenta corriente" && <p className="text-xs text-amber-700">{isCreditNote ? "Se descontará de la deuda. El excedente quedará a favor de Münna." : "Se sumará automáticamente al saldo del proveedor."}</p>}</div>
         {purchaseError && <p className="text-sm font-bold text-red-600">{purchaseError}</p>}
-        <DialogFooter><Button variant="outline" onClick={()=>{ setPurchaseOpen(false); setEditingPurchaseId(null); }}>Cancelar</Button><Button disabled={savingPurchase} onClick={savePurchase} className="bg-[#3b2931] text-white">{savingPurchase ? "Guardando…" : editingPurchaseId != null ? "Guardar cambios" : isCreditNote ? "Guardar nota de crédito" : "Guardar factura completa"}</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" disabled={savingPurchase} onClick={requestPurchaseClose}>Cancelar</Button><Button disabled={savingPurchase} onClick={savePurchase} className="bg-[#3b2931] text-white">{savingPurchase ? "Guardando…" : editingPurchaseId != null ? "Guardar cambios" : isCreditNote ? "Guardar nota de crédito" : "Guardar factura completa"}</Button></DialogFooter>
       </DialogContent></Dialog>
     </section>
   );
