@@ -65,6 +65,46 @@ const expenseCategory = (value: unknown) => {
   return allowed[normalized] ?? "Otros";
 };
 
+// Formula links remain live: costs are resolved from current ingredients on each read.
+const missingRecipeSchema = (error: Row | null) => ["42P01", "PGRST205"].includes(String(error?.code));
+async function recipeLinks(supabase: Awaited<ReturnType<typeof createServerSupabaseClient>>) {
+  const result = await supabase.from("recipe_formula_items").select("recipe_id,component_recipe_id,quantity_kg");
+  if (result.error && !missingRecipeSchema(result.error)) throw result.error;
+  return { links: (result.data ?? []) as Row[], available: !result.error };
+}
+function recipeCalculator(recipes: Row[], links: Row[], materialByName = new Map<string, Row>()) {
+  const byId = new Map(recipes.map((r) => [n(r.id), r]));
+  const memo = new Map<number, { items: Row[]; perKg: number }>();
+  const visiting = new Set<number>();
+  const calculate = (id: number): { items: Row[]; perKg: number } => {
+    const cached = memo.get(id);
+    if (cached) return cached;
+    const recipe = byId.get(id);
+    if (!recipe) throw new Error("Una fórmula base ya no está disponible.");
+    if (visiting.has(id)) throw new Error("Las fórmulas no pueden incluirse entre sí formando un círculo.");
+    visiting.add(id);
+    const yieldKg = n(recipe.yield_kg) > 0 ? n(recipe.yield_kg) : 1;
+    const items: Row[] = (recipe.recipe_items ?? []).map((item: Row) => {
+      const linked = one(item.purchased_products) as Row | null;
+      const material = materialByName.get(materialNameKey(linked?.master_name)) ?? linked;
+      const quantityKg = n(item.quantity_kg) / yieldKg;
+      const unitCost = n(material?.last_final_cost_per_unit);
+      return { id: item.id, materialId: material?.id ?? item.purchased_product_id, materialName: material?.master_name ?? "", quantityKg, unitCost, lineCost: quantityKg * unitCost };
+    });
+    for (const link of links.filter((item) => n(item.recipe_id) === id)) {
+      const recipeId = n(link.component_recipe_id);
+      const unitCost = calculate(recipeId).perKg;
+      const quantityKg = n(link.quantity_kg) / yieldKg;
+      items.push({ recipeId, materialId: null, materialName: byId.get(recipeId)?.name ?? "", quantityKg, unitCost, lineCost: quantityKg * unitCost });
+    }
+    const result = { items, perKg: items.reduce((sum, item) => sum + n(item.lineCost), 0) };
+    visiting.delete(id);
+    memo.set(id, result);
+    return result;
+  };
+  return calculate;
+}
+
 async function refreshFactoryMaterialCosts(supabase: any, requestedNames: string[] = []) {
   const [purchaseResult, itemResult, materialResult] = await Promise.all([
     supabase.from("purchases").select("id,invoice_date,cost_center").order("invoice_date", { ascending: false }).order("id", { ascending: false }).limit(5000),
@@ -306,29 +346,11 @@ export async function GET() {
         date: lastPurchase?.date ?? "Sin compras",
       };
     });
+    const formulaLinks = await recipeLinks(supabase);
+    const calculateRecipe = recipeCalculator(recipesResult.data ?? [], formulaLinks.links, materialByName);
     const formulaRows = (recipesResult.data ?? []).map((r: Row) => {
       const product = one(r.products) as Row | null;
-      const items = (Array.isArray(r.recipe_items) ? r.recipe_items : []).map((item: Row) => {
-        const linkedMaterial = one(item.purchased_products) as Row | null;
-        const material = materialByName.get(normalizeMaterialName(linkedMaterial?.master_name)) ?? linkedMaterial;
-        const quantity = n(item.quantity_kg);
-        const unitCost = n(material?.last_final_cost_per_unit);
-        return {
-          id: item.id,
-          materialId: material?.id ?? item.purchased_product_id,
-          materialName: material?.master_name ?? "",
-          quantityKg: quantity,
-          unitCost,
-          lineCost: quantity * unitCost,
-        };
-      });
-      const storedYieldKg = n(r.yield_kg) > 0 ? n(r.yield_kg) : 1;
-      const normalizedItems = items.map((item: Row) => ({
-        ...item,
-        quantityKg: n(item.quantityKg) / storedYieldKg,
-        lineCost: n(item.lineCost) / storedYieldKg,
-      }));
-      const costPerKg = normalizedItems.reduce((sum: number, item: Row) => sum + n(item.lineCost), 0);
+      const { items: normalizedItems, perKg: costPerKg } = calculateRecipe(n(r.id));
       return {
         id: r.id,
         productCode: product?.code ?? "",
@@ -382,6 +404,7 @@ export async function GET() {
       }) : [],
       suppliers: canSeeFinancials ? supplierRows : [],
       formulas: canSeeCosts ? formulaRows : [],
+      formulaReferencesAvailable: formulaLinks.available,
       productProfiles: (productsResult.data ?? []).map((r: Row) => ({
         code: String(r.code),
         name: String(r.name),
@@ -424,16 +447,21 @@ export async function POST(request: Request) {
         product = created.data;
       }
 
-      const recipeResult = await supabase.from("recipes").select("yield_kg, recipe_items(quantity_kg,purchased_products(last_final_cost_per_unit))").eq("product_id", product.id).eq("active", true).maybeSingle();
+      const [recipeResult, linksResult, materialResult] = await Promise.all([
+        supabase.from("recipes").select("id,product_id,yield_kg,recipe_items(purchased_product_id,quantity_kg,purchased_products(master_name,last_final_cost_per_unit))").eq("active", true),
+        recipeLinks(supabase),
+        supabase.from("purchased_products").select("id,master_name,last_final_cost_per_unit,last_purchase_at").eq("active", true),
+      ]);
       if (recipeResult.error) throw recipeResult.error;
-      const recipe = recipeResult.data as Row | null;
-      const recipeItems = Array.isArray(recipe?.recipe_items) ? recipe.recipe_items as Row[] : [];
-      const recipeCost = recipeItems.reduce((sum: number, item: Row) => {
-        const material = one(item.purchased_products) as Row | null;
-        return sum + n(item.quantity_kg) * n(material?.last_final_cost_per_unit);
-      }, 0);
-      const yieldKg = n(recipe?.yield_kg);
-      const costPerKgSnapshot = yieldKg > 0 ? recipeCost / yieldKg : null;
+      if (materialResult.error) throw materialResult.error;
+      const currentMaterials = new Map<string, Row>();
+      for (const material of (materialResult.data ?? []) as Row[]) {
+        const key = materialNameKey(material.master_name);
+        const current = currentMaterials.get(key);
+        if (!current || String(material.last_purchase_at ?? "") > String(current.last_purchase_at ?? "") || (String(material.last_purchase_at ?? "") === String(current.last_purchase_at ?? "") && n(material.id) < n(current.id))) currentMaterials.set(key, material);
+      }
+      const recipe = (recipeResult.data ?? []).find((row: Row) => n(row.product_id) === n(product.id));
+      const costPerKgSnapshot = recipe ? recipeCalculator(recipeResult.data ?? [], linksResult.links, currentMaterials)(n(recipe.id)).perKg : null;
 
       const saved = await supabase.from("production_units").insert({
         unique_code: String(record.uniqueCode), product_id: product.id, weight_kg: record.weight == null ? null : n(record.weight),
@@ -604,7 +632,8 @@ export async function POST(request: Request) {
       const totalQuantityKg = items.reduce((sum, item) => sum + n(item.quantityKg), 0);
       const totalInTenThousandths = Math.round(totalQuantityKg * 10000);
       if (!productCode || !name || !items.length) return Response.json({ error: "Elegí el producto y agregá al menos una materia prima." }, { status: 400 });
-      if (items.some((item) => n(item.materialId) <= 0 || n(item.quantityKg) <= 0)) return Response.json({ error: "Revisá las materias primas y sus cantidades." }, { status: 400 });
+      if (items.some((item) => !Number.isFinite(n(item.quantityKg)) || n(item.quantityKg) <= 0 || (n(item.materialId) > 0) === (n(item.recipeId) > 0))) return Response.json({ error: "Elegí una materia prima o una fórmula por renglón, con una cantidad mayor a cero." }, { status: 400 });
+      if (new Set(items.map((item) => n(item.recipeId) > 0 ? "recipe:" + n(item.recipeId) : "material:" + n(item.materialId))).size !== items.length) return Response.json({ error: "No repitas el mismo ingrediente en una fórmula." }, { status: 400 });
       if (totalInTenThousandths !== 10000) return Response.json({ error: `La fórmula debe sumar exactamente 1,0000 kg. Actualmente suma ${totalQuantityKg.toLocaleString("es-AR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} kg.` }, { status: 400 });
 
       let { data: product, error: productError } = await supabase.from("products").select("id").eq("code", productCode).maybeSingle();
@@ -624,6 +653,11 @@ export async function POST(request: Request) {
         if (createdProduct.error) throw createdProduct.error;
         product = createdProduct.data;
       }
+
+      const atomicSave = await supabase.rpc("save_recipe_components", { p_product_id: product.id, p_name: name, p_items: items });
+      if (!atomicSave.error) return Response.json({ recipe: atomicSave.data }, { status: 201 });
+      if (String(atomicSave.error.code) !== "PGRST202") return Response.json({ error: atomicSave.error.message }, { status: 400 });
+      if (items.some((item) => n(item.recipeId) > 0) || (await recipeLinks(supabase)).available) return Response.json({ error: "Falta activar las fórmulas compuestas en la base de datos." }, { status: 409 });
 
       const savedRecipe = await supabase.from("recipes").upsert({
         product_id: product.id,
