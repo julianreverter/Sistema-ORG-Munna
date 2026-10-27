@@ -34,3 +34,7 @@ El código admite desplegar antes de ejecutar la migración: mantiene la carga d
 - `npm run build`: compilación y revisión de tipos.
 - Para probar también el SQL con PostgreSQL aislado: instalar temporalmente `@electric-sql/pglite@0.5.12` con `npm install --no-save --package-lock=false @electric-sql/pglite@0.5.12` y ejecutar `node tests/formula-migration.mjs`. La prueba usa una base en memoria, sin conexión a Supabase. Verifica migración repetible, persistencia de vínculos, ciclos, errores intermedios y conservación de la fórmula previa.
 - Prueba funcional tras activar: en Granizado cargar fórmula Americana 0,9 kg y chocolate 0,1 kg, guardar y reabrir. Cambiar Americana o el costo de una materia prima de Americana y comprobar el nuevo costo de Granizado. Rechazar Americana → Granizado cuando Granizado ya usa Americana.
+
+## Fórmulas sin producto maestro
+
+La migración `20261027201834_named_recipes.sql` permite dejar `recipes.product_id` vacío y agrega `save_named_recipe`. La edición identifica la fórmula por su ID para conservar sus vínculos. El nombre es obligatorio; la asociación al maestro es opcional. Cada ingrediente permite elegir primero Materia prima o Producto; Producto muestra las fórmulas guardadas, tengan o no maestro. Se mantienen la validación de 1 kg y el bloqueo de ciclos. La migración anterior y su función siguen disponibles para compatibilidad.

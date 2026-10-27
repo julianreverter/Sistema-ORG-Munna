@@ -49,7 +49,7 @@ const save=(api,items)=>api.POST(new Request('http://test/api/operations',{metho
 test('saving uses one atomic database operation and retains formula IDs',async()=>{
   const api=fixture(); const items=[{recipeId:1,quantityKg:.9},{materialId:2,quantityKg:.1}];
   const response=await save(api,items);assert.equal(response.status,201);
-  assert.equal(api.writes.length,1);assert.equal(api.writes[0].name,'save_recipe_components');
+  assert.equal(api.writes.length,1);assert.equal(api.writes[0].name,'save_named_recipe');
   assert.deepEqual(JSON.parse(JSON.stringify(api.writes[0].args.p_items)),items);
 });
 test('invalid quantities, duplicate ingredients and ambiguous types never write',async()=>{
@@ -75,4 +75,13 @@ test('production snapshots use the live composed formula cost',async()=>{
   const response=await api.POST(new Request('http://test/api/operations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'register-production',record:{uniqueCode:'123456',productCode:'GR',weight:5}})}));
   assert.equal(response.status,201);assert.equal((await response.json()).costPerKgSnapshot,1900);
   assert.equal(api.writes.find(row=>row.table==='production_units').values.cost_per_kg_snapshot,1900);
+});
+
+test('formulas can be saved and edited without a master product',async()=>{
+  const api=fixture();
+  const response=await api.POST(new Request('http://test/api/operations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'save-recipe',recipe:{id:12,name:'Base Americana',productCode:'',items:[{materialId:2,quantityKg:1}]}})}));
+  assert.equal(response.status,201);
+  const call=api.writes.find(row=>row.name==='save_named_recipe');
+  assert.equal(call.args.p_recipe_id,12);assert.equal(call.args.p_product_id,null);
+  assert.equal(api.writes.some(row=>row.table==='products'),false);
 });

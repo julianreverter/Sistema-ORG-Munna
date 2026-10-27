@@ -631,50 +631,36 @@ export async function POST(request: Request) {
       const items = Array.isArray(recipe?.items) ? recipe.items as Row[] : [];
       const totalQuantityKg = items.reduce((sum, item) => sum + n(item.quantityKg), 0);
       const totalInTenThousandths = Math.round(totalQuantityKg * 10000);
-      if (!productCode || !name || !items.length) return Response.json({ error: "Elegí el producto y agregá al menos una materia prima." }, { status: 400 });
+      if (!name || !items.length) return Response.json({ error: "Completá el nombre y agregá al menos un ingrediente." }, { status: 400 });
       if (items.some((item) => !Number.isFinite(n(item.quantityKg)) || n(item.quantityKg) <= 0 || (n(item.materialId) > 0) === (n(item.recipeId) > 0))) return Response.json({ error: "Elegí una materia prima o una fórmula por renglón, con una cantidad mayor a cero." }, { status: 400 });
       if (new Set(items.map((item) => n(item.recipeId) > 0 ? "recipe:" + n(item.recipeId) : "material:" + n(item.materialId))).size !== items.length) return Response.json({ error: "No repitas el mismo ingrediente en una fórmula." }, { status: 400 });
       if (totalInTenThousandths !== 10000) return Response.json({ error: `La fórmula debe sumar exactamente 1,0000 kg. Actualmente suma ${totalQuantityKg.toLocaleString("es-AR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} kg.` }, { status: 400 });
 
-      let { data: product, error: productError } = await supabase.from("products").select("id").eq("code", productCode).maybeSingle();
-      if (productError) throw productError;
-      if (!product) {
-        const createdProduct = await supabase.from("products").insert({
-          code: productCode,
-          name: String(productData?.name ?? name),
-          family: String(productData?.family ?? "Helado"),
-          presentation: String(productData?.presentation ?? "Producción"),
-          container: String(productData?.container ?? ""),
-          unit_type: "kg",
-          base_price: n(productData?.price),
-          ingredients: String(productData?.ingredients ?? ""),
-          expiry_days: Math.max(1, n(productData?.expiryDays) || 365),
-        }).select("id").single();
-        if (createdProduct.error) throw createdProduct.error;
-        product = createdProduct.data;
+      let product: Row | null = null;
+      if (productCode) {
+        const productResult = await supabase.from("products").select("id").eq("code", productCode).maybeSingle();
+        if (productResult.error) throw productResult.error;
+        product = productResult.data;
+        if (!product) {
+          const createdProduct = await supabase.from("products").insert({
+            code: productCode,
+            name: String(productData?.name ?? name),
+            family: String(productData?.family ?? "Helado"),
+            presentation: String(productData?.presentation ?? "Producción"),
+            container: String(productData?.container ?? ""),
+            unit_type: "kg",
+            base_price: n(productData?.price),
+            ingredients: String(productData?.ingredients ?? ""),
+            expiry_days: Math.max(1, n(productData?.expiryDays) || 365),
+          }).select("id").single();
+          if (createdProduct.error) throw createdProduct.error;
+          product = createdProduct.data;
+        }
+  
       }
-
-      const atomicSave = await supabase.rpc("save_recipe_components", { p_product_id: product.id, p_name: name, p_items: items });
-      if (!atomicSave.error) return Response.json({ recipe: atomicSave.data }, { status: 201 });
-      if (String(atomicSave.error.code) !== "PGRST202") return Response.json({ error: atomicSave.error.message }, { status: 400 });
-      if (items.some((item) => n(item.recipeId) > 0) || (await recipeLinks(supabase)).available) return Response.json({ error: "Falta activar las fórmulas compuestas en la base de datos." }, { status: 409 });
-
-      const savedRecipe = await supabase.from("recipes").upsert({
-        product_id: product.id,
-        name,
-        yield_kg: 1,
-        active: true,
-      }, { onConflict: "product_id" }).select("*").single();
-      if (savedRecipe.error) throw savedRecipe.error;
-      const deleteItems = await supabase.from("recipe_items").delete().eq("recipe_id", savedRecipe.data.id);
-      if (deleteItems.error) throw deleteItems.error;
-      const savedItems = await supabase.from("recipe_items").insert(items.map((item) => ({
-        recipe_id: savedRecipe.data.id,
-        purchased_product_id: n(item.materialId),
-        quantity_kg: n(item.quantityKg),
-      })));
-      if (savedItems.error) throw savedItems.error;
-      return Response.json({ recipe: savedRecipe.data }, { status: 201 });
+      const saved = await supabase.rpc("save_named_recipe", { p_recipe_id: recipe.id == null ? null : n(recipe.id), p_product_id: product?.id ?? null, p_name: name, p_items: items });
+      if (saved.error) return Response.json({ error: saved.error.message }, { status: 400 });
+      return Response.json({ recipe: saved.data }, { status: 201 });
     }
 
     if (payload.action === "update-raw-material") {
