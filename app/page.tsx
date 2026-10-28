@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, type Dispatch as StateDispatch, type SetStateAction } from "react";
 import Image from "next/image";
+import { PRODUCTION_TEAM } from "@/lib/production-team";
 import {
   AlertTriangle,
   Archive,
@@ -699,7 +700,8 @@ function Production({
   const [weight, setWeight] = useState("7.155");
   const [quantity, setQuantity] = useState("20");
   const [responsible, setResponsible] = useState("");
-  const selectedResponsible = responsible || responsibleOptions[0]?.displayName || "Sin asignar";
+  const producerNames = Array.from(new Set<string>([...PRODUCTION_TEAM, ...responsibleOptions.filter((member) => member.active).map((member) => member.displayName)]));
+  const selectedResponsible = responsible || "";
   const selectedProduct = activeProductCatalog().find(
     (item) => `${item.code} · ${item.name}` === product,
   );
@@ -809,11 +811,13 @@ function Production({
                 : `Presentación configurada: ${selectedProduct?.presentation ?? "seleccioná un producto"}.`}
           </span>
         </label>
+        <p className="text-sm text-muted-foreground">Responsable de producción: Evelin De Masi. Elegí quién elaboró esta unidad.</p>
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="space-y-2 text-sm font-bold">
-            Responsable
+            Elaborado por
             <select value={selectedResponsible} onChange={(event) => setResponsible(event.target.value)} className="h-11 w-full rounded-xl border bg-white px-3 font-normal">
-              {responsibleOptions.filter((member) => member.active).map((member) => <option key={member.id} value={member.displayName}>{member.displayName}</option>)}
+              <option value="" disabled>Seleccioná quién elaboró</option>
+              {producerNames.map((name) => <option key={name} value={name}>{name}</option>)}
             </select>
           </label>
           <label className="space-y-2 text-sm font-bold">
@@ -826,7 +830,7 @@ function Production({
           </label>
         </div>
         <Button
-          disabled={!product || !selectedProduct || saved || saving || (isWeightProduct ? !weight.trim() : !quantity.trim())}
+          disabled={!product || !selectedProduct || !selectedResponsible || saved || saving || (isWeightProduct ? !weight.trim() : !quantity.trim())}
           onClick={async () => {
             if (!selectedProduct) return;
             const printWindow = openProductionLabelWindow();

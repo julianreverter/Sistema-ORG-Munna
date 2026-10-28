@@ -1,6 +1,8 @@
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getChatGPTUser } from "@/app/chatgpt-auth";
 
+import { PRODUCTION_TEAM, PRODUCTION_LEAD_EMAIL } from "@/lib/production-team";
+
 type Row = Record<string, any>;
 
 async function context() {
@@ -167,7 +169,7 @@ function productionRow(row: Row) {
     container: product?.container ?? "",
     weightKg: row.weight_kg == null ? null : n(row.weight_kg),
     units: row.units,
-    responsible: row.responsible?.display_name ?? "",
+    responsible: row.elaborated_by || row.responsible?.display_name || "",
     family: product?.family ?? "",
     basePriceSnapshot: n(row.base_price_snapshot),
     costPerKgSnapshot: row.cost_per_kg_snapshot == null ? null : n(row.cost_per_kg_snapshot),
@@ -440,6 +442,16 @@ export async function POST(request: Request) {
     if (payload.action === "register-production") {
       const record = payload.record as Row;
       if (!record?.uniqueCode || !record.productCode) return Response.json({ error: "Faltan datos de producción." }, { status: 400 });
+      const elaboratedBy = String(record.responsible ?? "").trim();
+      const teamMember = PRODUCTION_TEAM.some((name) => name === elaboratedBy);
+      const profilesResult = await supabase.from("profiles").select("id,email,display_name").eq("active", true);
+      if (profilesResult.error) throw profilesResult.error;
+      const activeProfiles = profilesResult.data ?? [];
+      if (!elaboratedBy || (!teamMember && !activeProfiles.some((person: Row) => person.display_name === elaboratedBy))) {
+        return Response.json({ error: "Seleccioná quién elaboró la unidad." }, { status: 400 });
+      }
+      const productionLead = teamMember ? activeProfiles.find((person: Row) => person.email?.toLowerCase() === PRODUCTION_LEAD_EMAIL) : null;
+      if (teamMember && !productionLead) return Response.json({ error: "La responsable de producción no está activa." }, { status: 409 });
       let { data: product } = await supabase.from("products").select("id").eq("code", String(record.productCode)).maybeSingle();
       if (!product) {
         const created = await supabase.from("products").insert({ code: String(record.productCode), name: String(record.productName ?? record.productCode), family: String(record.family ?? "Helado"), presentation: String(record.presentation ?? ""), container: String(record.container ?? ""), unit_type: record.units == null ? "kg" : "unidad", base_price: n(record.price) }).select("id").single();
@@ -465,7 +477,7 @@ export async function POST(request: Request) {
 
       const saved = await supabase.from("production_units").insert({
         unique_code: String(record.uniqueCode), product_id: product.id, weight_kg: record.weight == null ? null : n(record.weight),
-        units: record.units == null ? null : n(record.units), responsible_id: user.id, created_by: user.id,
+        units: record.units == null ? null : n(record.units), responsible_id: productionLead?.id ?? user.id, elaborated_by: elaboratedBy, created_by: user.id,
         base_price_snapshot: n(record.price), cost_per_kg_snapshot: costPerKgSnapshot, lot: record.lot || null, expires_at: record.expiresAt || null,
       }).select().single();
       if (saved.error) throw saved.error;
