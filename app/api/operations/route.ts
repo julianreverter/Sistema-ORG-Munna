@@ -107,7 +107,7 @@ function recipeCalculator(recipes: Row[], links: Row[], materialByName = new Map
   return calculate;
 }
 
-async function refreshFactoryMaterialCosts(supabase: any, requestedNames: string[] = []) {
+async function refreshMaterialCosts(supabase: any, requestedNames: string[] = []) {
   const [purchaseResult, itemResult, materialResult] = await Promise.all([
     supabase.from("purchases").select("id,invoice_date,cost_center").order("invoice_date", { ascending: false }).order("id", { ascending: false }).limit(5000),
     supabase.from("purchase_items").select("id,purchase_id,purchased_product_id,net_package_price,final_cost_per_unit").order("id", { ascending: true }).limit(20000),
@@ -135,8 +135,7 @@ async function refreshFactoryMaterialCosts(supabase: any, requestedNames: string
       if (!key || (requestedKeys.size && !requestedKeys.has(key)) || String(name).startsWith("__GASTO__")) return;
       const allocation = allocations[index];
       const kind = allocation?.kind ?? "material";
-      const center = allocation?.center ?? purchase.cost_center;
-      if (kind !== "material" || String(center ?? "").trim().toLocaleLowerCase("es-AR") !== "fábrica" || latestByName.has(key)) return;
+      if (kind !== "material" || latestByName.has(key)) return;
       latestByName.set(key, { ...item, name, invoiceDate: purchase.invoice_date });
     });
   }
@@ -252,6 +251,27 @@ export async function GET() {
       if (!current || candidateDate > currentDate || (candidateDate === currentDate && n(material.id) < n(current.id))) {
         materialByName.set(key, material);
       }
+    }
+
+    // Resolve historical purchases too: older cached costs excluded branch purchases.
+    const latestMaterialNames = new Set<string>();
+    const datedPurchases = [...(purchasesResult.data ?? [])].sort((a: Row, b: Row) =>
+      String(b.invoice_date).localeCompare(String(a.invoice_date)) || n(b.id) - n(a.id));
+    for (const purchase of datedPurchases) {
+      if (decodePurchaseMeta(purchase.cost_center).documentType === "credit_note") continue;
+      const allocations = decodePurchaseAllocations(purchase.cost_center);
+      const items = [...(purchase.purchase_items ?? [])].sort((a: Row, b: Row) => n(a.id) - n(b.id));
+      items.forEach((item: Row, index: number) => {
+        if ((allocations[index]?.kind ?? "material") !== "material") return;
+        const linked = one(item.purchased_products) as Row | null;
+        const key = materialNameKey(linked?.master_name);
+        const material = materialByName.get(key);
+        if (!material || latestMaterialNames.has(key)) return;
+        latestMaterialNames.add(key);
+        material.last_purchase_at = purchase.invoice_date;
+        material.last_net_package_cost = n(item.net_package_price);
+        material.last_final_cost_per_unit = n(item.final_cost_per_unit);
+      });
     }
     const materialRows = Array.from(materialByName.values()).sort((a, b) => String(a.master_name).localeCompare(String(b.master_name), "es"));
 
@@ -796,7 +816,7 @@ export async function POST(request: Request) {
       const deleted = await supabase.from("purchases").delete().eq("id", purchaseId).select("id").maybeSingle();
       if (deleted.error) throw deleted.error;
       if (!deleted.data) return Response.json({ error: "La factura ya no existe." }, { status: 404 });
-      await refreshFactoryMaterialCosts(supabase, affectedNames);
+      await refreshMaterialCosts(supabase, affectedNames);
       return Response.json({ deleted: true });
     }
 
@@ -931,7 +951,7 @@ export async function POST(request: Request) {
       }
 
       const affectedNames = Array.from(new Set([...previouslyAffectedNames, ...preparedLines.filter((line) => line.kind === "material").map((line) => String(line.productName))]));
-      if (!isCreditNote) await refreshFactoryMaterialCosts(supabase, affectedNames);
+      if (!isCreditNote) await refreshMaterialCosts(supabase, affectedNames);
       return Response.json({ purchase: savedPurchase.data }, { status: purchaseId ? 200 : 201 });
     }
 
@@ -977,3 +997,5 @@ export async function POST(request: Request) {
     return Response.json({ error: unauthorized ? "Iniciá sesión para continuar." : duplicate ? "Ese registro ya existe." : message }, { status: unauthorized ? 401 : duplicate ? 409 : 500 });
   }
 }
+
+
