@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState, type Dispatch as StateDispatch, type SetStateAction } from "react";
+import { useEffect, useMemo, useRef, useState, type Dispatch as StateDispatch, type SetStateAction } from "react";
 import Image from "next/image";
+import { accountDay, accountDate, accountDefaultRange, accountMoney, summarizeAccount, customerStatementHtml } from "@/lib/account-summary";
 import { PRODUCTION_TEAM } from "@/lib/production-team";
 import {
   AlertTriangle,
@@ -2081,11 +2082,15 @@ function StaffManagement({ staff, setStaff }: { staff: StaffMember[]; setStaff: 
   </section>;
 }
 
-type CustomerDispatch = { id: number; remittanceNumber: string; clientId: number; clientName: string; totalKg: number; total: number; createdAt: string };
+type CustomerDispatch = { estimatedCostLines?: number; productionCost?: number; missingCostLines?: number; id: number; remittanceNumber: string; clientId: number; clientName: string; totalKg: number; total: number; createdAt: string };
 type CustomerPayment = { id: number; clientId: number; clientName: string; paymentDate: string; amount: number; method: string; reference: string | null; notes: string | null; createdAt: string };
 type CustomerAdjustment = { id: number; clientId: number; clientName: string; movementDate: string; movementType: string; concept: string; signedAmount: number; notes: string | null; createdAt: string };
 
 function CustomerAccounts({ clients }: { clients: Client[] }) {
+  const [range, setRange] = useState(() => accountDefaultRange());
+  const [loading, setLoading] = useState(true);
+  const [accountReady, setAccountReady] = useState(false);
+  const requestSequence = useRef(0);
   const [clientId, setClientId] = useState(clients[0]?.id ?? 0);
   const [dispatchRows, setDispatchRows] = useState<CustomerDispatch[]>([]);
   const [paymentRows, setPaymentRows] = useState<CustomerPayment[]>([]);
@@ -2098,14 +2103,23 @@ function CustomerAccounts({ clients }: { clients: Client[] }) {
   const [adjustment, setAdjustment] = useState({ movementType: "Venta", concept: "Regalía mensual", amount: "", effect: "increase", notes: "", movementDate: new Date().toISOString().slice(0, 10) });
   const selectedClient = clients.find((client) => client.id === clientId) ?? clients[0];
   const loadAccount = async () => {
-    const response = await fetch("/api/operations");
-    const data = await response.json() as { recentDispatches?: CustomerDispatch[]; customerPayments?: CustomerPayment[]; customerAdjustments?: CustomerAdjustment[]; error?: string };
-    if (!response.ok) throw new Error(data.error ?? "No se pudo cargar la cuenta corriente.");
-    setDispatchRows(data.recentDispatches ?? []);
-    setPaymentRows(data.customerPayments ?? []);
-    setAdjustmentRows(data.customerAdjustments ?? []);
+    const requestId = ++requestSequence.current;
+    setLoading(true); setAccountReady(false); setError("");
+    try {
+      const response = await fetch("/api/customer-account?clientId=" + clientId, { cache: "no-store" });
+      const data = await response.json() as { recentDispatches?: CustomerDispatch[]; customerPayments?: CustomerPayment[]; customerAdjustments?: CustomerAdjustment[]; error?: string };
+      if (requestId !== requestSequence.current) return;
+      if (!response.ok) throw new Error(data.error ?? "No se pudo cargar la cuenta corriente.");
+      setDispatchRows(data.recentDispatches ?? []); setPaymentRows(data.customerPayments ?? []); setAdjustmentRows(data.customerAdjustments ?? []);
+      setAccountReady(true);
+    } finally { if (requestId === requestSequence.current) setLoading(false); }
   };
-  useEffect(() => { loadAccount().catch((loadError) => setError(loadError instanceof Error ? loadError.message : "No se pudo cargar la cuenta corriente.")); }, []);
+  useEffect(() => {
+    setDispatchRows([]); setPaymentRows([]); setAdjustmentRows([]);
+    if (clientId) loadAccount().catch((loadError) => setError(loadError instanceof Error ? loadError.message : "No se pudo cargar la cuenta corriente."));
+    else { setLoading(false); setAccountReady(false); }
+    return () => { requestSequence.current++; };
+  }, [clientId]);
   const clientDispatches = dispatchRows.filter((row) => row.clientId === clientId || row.clientName === selectedClient?.name);
   const clientPayments = paymentRows.filter((row) => row.clientId === clientId || row.clientName === selectedClient?.name);
   const clientAdjustments = adjustmentRows.filter((row) => row.clientId === clientId || row.clientName === selectedClient?.name);
@@ -2118,6 +2132,23 @@ function CustomerAccounts({ clients }: { clients: Client[] }) {
     ...clientPayments.map((row) => ({ key: `p-${row.id}`, date: row.paymentDate, detail: `Pago · ${row.method}`, debit: 0, credit: Number(row.amount), note: row.reference || row.notes || "Sin referencia" })),
     ...clientAdjustments.map((row) => ({ key: `a-${row.id}`, date: row.movementDate, detail: `${row.movementType} · ${row.concept}`, debit: row.signedAmount > 0 ? Number(row.signedAmount) : 0, credit: row.signedAmount < 0 ? Math.abs(Number(row.signedAmount)) : 0, note: row.notes || (row.signedAmount > 0 ? "Aumenta el saldo" : "Disminuye el saldo") })),
   ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  const summary = summarizeAccount(movements, range.from, range.to);
+  const inPeriod = (date: string) => Boolean(summary) && accountDay(date) >= range.from && accountDay(date) <= range.to;
+  const periodDispatches = clientDispatches.filter((row) => inPeriod(row.createdAt));
+  const periodSales = periodDispatches.reduce((sum, row) => sum + Number(row.total), 0);
+  const manualSales = clientAdjustments.filter((row) => row.movementType.toLowerCase() === "venta" && inPeriod(row.movementDate)).reduce((sum, row) => sum + Number(row.signedAmount), 0);
+  const periodCost = periodDispatches.reduce((sum, row) => sum + Number(row.productionCost ?? 0), 0);
+  const missingCosts = periodDispatches.reduce((sum, row) => sum + Number(row.missingCostLines ?? 0), 0);
+  const estimatedCosts = periodDispatches.reduce((sum, row) => sum + Number(row.estimatedCostLines ?? 0), 0);
+  const exportStatement = () => {
+    if (!summary || !accountReady || !selectedClient) return;
+    const preview = window.open("", "_blank");
+    if (!preview) { setError("Permití abrir la ventana del resumen para imprimirlo o guardarlo como PDF."); return; }
+    preview.opener = null;
+    preview.document.write(customerStatementHtml(selectedClient.name, range.from, range.to, movements));
+    preview.document.close();
+    preview.focus();
+  };
   const savePayment = async () => {
     if (!selectedClient || !Number(payment.amount.replace(/\D/g, ""))) return;
     setSaving(true); setError("");
@@ -2149,8 +2180,34 @@ function CustomerAccounts({ clients }: { clients: Client[] }) {
       <div className="flex flex-col gap-2 sm:flex-row"><select value={clientId} onChange={(event) => setClientId(Number(event.target.value))} className="h-11 min-w-64 rounded-xl border bg-white px-3 font-bold">{clients.filter((client) => client.active).map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select><Button variant="outline" onClick={() => setAdjustmentOpen(true)} className="h-11 rounded-xl"><Plus /> Nueva venta / ajuste</Button><Button onClick={() => setPaymentOpen(true)} className="h-11 rounded-xl bg-[#3b2931] text-white"><Plus /> Registrar cobro</Button></div>
     </div>
     {error && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">{error}</div>}
-    <div className="grid gap-4 sm:grid-cols-3"><div className="rounded-3xl border bg-white p-5 shadow-sm"><p className="text-sm font-bold text-muted-foreground">Remitos enviados</p><p className="mt-2 text-3xl font-black">{money(invoiced)}</p><p className="mt-2 text-xs text-muted-foreground">{clientDispatches.length} movimientos</p></div><div className="rounded-3xl border bg-white p-5 shadow-sm"><p className="text-sm font-bold text-muted-foreground">Pagos recibidos</p><p className="mt-2 text-3xl font-black text-emerald-700">{money(collected)}</p><p className="mt-2 text-xs text-muted-foreground">{clientPayments.length} cobros registrados</p></div><div className={`rounded-3xl p-5 text-white shadow-sm ${balance > 0 ? "bg-[#3b2931]" : "bg-emerald-700"}`}><p className="text-sm font-bold text-white/70">Saldo actual</p><p className="mt-2 text-3xl font-black">{money(balance)}</p><p className="mt-2 text-xs text-white/70">{balance > 0 ? "El cliente debe a Münna" : balance < 0 ? "Saldo a favor del cliente" : "Cuenta al día"}</p></div></div>
-    <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="border-b p-5"><h3 className="text-xl font-black">Movimientos de {selectedClient?.name}</h3><p className="text-sm text-muted-foreground">Los remitos suman deuda y los pagos la descuentan.</p></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Fecha</TableHead><TableHead>Movimiento</TableHead><TableHead>Detalle</TableHead><TableHead className="text-right">Debe</TableHead><TableHead className="text-right">Haber</TableHead></TableRow></TableHeader><TableBody>{movements.length === 0 && <TableRow><TableCell colSpan={5} className="py-10 text-center text-muted-foreground">Todavía no hay movimientos para este cliente.</TableCell></TableRow>}{movements.map((row) => <TableRow key={row.key}><TableCell>{new Date(row.date).toLocaleDateString("es-AR")}</TableCell><TableCell className="font-bold">{row.detail}</TableCell><TableCell className="text-muted-foreground">{row.note}</TableCell><TableCell className="text-right text-rose-700">{row.debit ? money(row.debit) : "—"}</TableCell><TableCell className="text-right text-emerald-700">{row.credit ? money(row.credit) : "—"}</TableCell></TableRow>)}</TableBody></Table></div></div>
+    <div className="flex flex-wrap items-end gap-4 rounded-3xl border bg-white p-5 shadow-sm">
+      <label className="space-y-2 text-sm font-bold">Desde<Input type="date" value={range.from} onChange={(event) => setRange({ ...range, from: event.target.value })}/></label>
+      <label className="space-y-2 text-sm font-bold">Hasta<Input type="date" value={range.to} onChange={(event) => setRange({ ...range, to: event.target.value })}/></label>
+      <Button variant="outline" onClick={() => setRange(accountDefaultRange())}>Últimos 2 meses</Button>
+      <Button disabled={loading || !accountReady || !summary} onClick={exportStatement} className="bg-[#3b2931] text-white"><FileText /> Exportar resumen / PDF</Button>
+      <p className="w-full text-xs text-muted-foreground">El resumen para el cliente incluye saldo anterior, movimientos y saldo final. No incluye costos ni notas internas. En la vista previa, elegí Imprimir / Guardar como PDF.</p>
+    </div>
+    {!summary && <p role="alert" className="text-sm font-bold text-red-700">Ingresá ambas fechas y verificá que Desde no sea posterior a Hasta.</p>}
+    {loading && <p role="status" className="p-5 text-sm text-muted-foreground">Cargando historial completo del cliente…</p>}
+    {!loading && accountReady && summary && <>
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <Metric icon={WalletCards} label="Saldo anterior" value={accountMoney(summary.opening)} note={"Antes del " + accountDate(range.from)} />
+        <Metric icon={WalletCards} label="Cargos del período" value={accountMoney(summary.debits)} note="Remitos, ventas y ajustes que aumentan deuda" />
+        <Metric icon={WalletCards} label="Créditos del período" value={accountMoney(summary.credits)} note="Cobros y ajustes que disminuyen deuda" />
+        <Metric icon={WalletCards} label={summary.closing < 0 ? "Saldo a favor del cliente" : "Saldo deudor al cierre"} value={accountMoney(Math.abs(summary.closing))} note={"Al " + accountDate(range.to) + " · saldo actual: " + accountMoney(balance)} />
+      </div>
+      <div className="rounded-3xl border bg-[#fff9fb] p-5 shadow-sm"><h3 className="text-lg font-black">Análisis interno del período</h3><p className="mt-1 text-xs text-muted-foreground">Esta información no se incluye en el resumen para el cliente.</p><div className="mt-4 grid gap-4 sm:grid-cols-3">
+        <div><p className="text-sm font-bold">Compras del cliente</p><p className="mt-2 text-2xl font-black">{accountMoney(periodSales + manualSales)}</p><p className="text-xs text-muted-foreground">Remitos: {accountMoney(periodSales)} · ventas manuales: {accountMoney(manualSales)}</p></div>
+        <div><p className="text-sm font-bold">Costo de producción {missingCosts ? "conocido (parcial)" : estimatedCosts ? "estimado" : "de los remitos"}</p><p className="mt-2 text-2xl font-black">{accountMoney(periodCost)}</p><p className="text-xs text-muted-foreground">Costo histórico disponible o fórmula actual × kg despachados</p></div>
+        <div><p className="text-sm font-bold">Margen bruto {estimatedCosts ? "estimado" : "de los remitos"}</p><p className="mt-2 text-2xl font-black">{missingCosts ? "Costo incompleto" : accountMoney(periodSales - periodCost)}</p><p className="text-xs text-muted-foreground">Sin gastos operativos ni ventas manuales</p></div>
+      </div>{estimatedCosts > 0 && <p className="mt-4 text-sm text-amber-800">{estimatedCosts} líneas estimadas con la fórmula y costos actuales porque no tienen costo histórico. Esta estimación cambia si se actualiza la fórmula o el precio de los insumos.</p>}{missingCosts > 0 && <p className="mt-4 text-sm font-bold text-amber-800">{missingCosts} líneas sin costo histórico por kg. El costo mostrado es parcial; no se calcula margen hasta tener el costo completo.</p>}{manualSales !== 0 && <p className="mt-3 text-xs text-muted-foreground">Las ventas manuales no tienen costo de fórmula asociado.</p>}</div>
+      <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="border-b p-5"><h3 className="text-xl font-black">Movimientos de {selectedClient?.name}</h3><p className="text-sm text-muted-foreground">Del {accountDate(range.from)} al {accountDate(range.to)}. Saldo acumulado en orden cronológico.</p></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Fecha</TableHead><TableHead>Movimiento</TableHead><TableHead>Detalle interno</TableHead><TableHead className="text-right">Debe</TableHead><TableHead className="text-right">Haber</TableHead><TableHead className="text-right">Saldo</TableHead></TableRow></TableHeader><TableBody>
+        <TableRow className="bg-[#fff4f8]"><TableCell colSpan={5} className="font-bold">Saldo anterior al {accountDate(range.from)}</TableCell><TableCell className="text-right font-bold">{accountMoney(summary.opening)}</TableCell></TableRow>
+        {summary.rows.length === 0 && <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">No hay movimientos en este período.</TableCell></TableRow>}
+        {summary.rows.map((row) => <TableRow key={row.key}><TableCell className="whitespace-nowrap">{accountDate(row.date)}</TableCell><TableCell className="font-bold">{row.detail}</TableCell><TableCell className="text-muted-foreground">{row.note}</TableCell><TableCell className="text-right text-rose-700">{row.debit ? accountMoney(row.debit) : "—"}</TableCell><TableCell className="text-right text-emerald-700">{row.credit ? accountMoney(row.credit) : "—"}</TableCell><TableCell className="text-right font-bold">{accountMoney(row.balance)}</TableCell></TableRow>)}
+        <TableRow className="bg-[#fff4f8]"><TableCell colSpan={3} className="font-bold">Saldo al cierre</TableCell><TableCell className="text-right font-bold">{accountMoney(summary.debits)}</TableCell><TableCell className="text-right font-bold">{accountMoney(summary.credits)}</TableCell><TableCell className="text-right font-bold">{accountMoney(summary.closing)}</TableCell></TableRow>
+      </TableBody></Table></div></div>
+    </>}
     <Dialog open={paymentOpen} onOpenChange={setPaymentOpen}><DialogContent className="sm:max-w-[620px]"><DialogHeader><DialogTitle>Registrar cobro de cliente</DialogTitle><DialogDescription>El importe se descontará automáticamente del saldo de {selectedClient?.name}.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold">Fecha<Input type="date" value={payment.paymentDate} onChange={(event) => setPayment({ ...payment, paymentDate: event.target.value })}/></label><label className="space-y-2 text-sm font-bold">Monto recibido<Input value={payment.amount} onChange={(event) => setPayment({ ...payment, amount: event.target.value })} inputMode="numeric" placeholder="$ 0"/></label><label className="space-y-2 text-sm font-bold">Forma de pago<select value={payment.method} onChange={(event) => setPayment({ ...payment, method: event.target.value })} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal">{["Transferencia", "Efectivo", "Echeq", "Cheque de tercero", "Mercadería"].map((method) => <option key={method}>{method}</option>)}</select></label><label className="space-y-2 text-sm font-bold">Referencia<Input value={payment.reference} onChange={(event) => setPayment({ ...payment, reference: event.target.value })} placeholder="Transferencia, recibo o cheque"/></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Observaciones<Textarea value={payment.notes} onChange={(event) => setPayment({ ...payment, notes: event.target.value })} placeholder="Pago total, parcial u observaciones"/></label></div><div className="rounded-2xl bg-[#f7f3f5] p-4 text-sm"><div className="flex justify-between"><span>Saldo actual</span><b>{money(balance)}</b></div><div className="mt-2 flex justify-between border-t pt-2"><span>Saldo luego del cobro</span><b>{money(balance - (Number(payment.amount.replace(/\D/g, "")) || 0))}</b></div></div><DialogFooter><Button variant="outline" onClick={() => setPaymentOpen(false)}>Cancelar</Button><Button disabled={saving} onClick={savePayment} className="bg-[#3b2931] text-white">{saving ? "Guardando…" : "Registrar cobro"}</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={adjustmentOpen} onOpenChange={setAdjustmentOpen}><DialogContent className="sm:max-w-[620px]"><DialogHeader><DialogTitle>Nueva venta o ajuste</DialogTitle><DialogDescription>Registrá regalías, ventas adicionales, bonificaciones o correcciones de saldo.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold">Fecha<Input type="date" value={adjustment.movementDate} onChange={(event) => setAdjustment({ ...adjustment, movementDate: event.target.value })}/></label><label className="space-y-2 text-sm font-bold">Tipo<select value={adjustment.movementType} onChange={(event) => setAdjustment({ ...adjustment, movementType: event.target.value })} className="h-9 w-full rounded-md border bg-white px-3 font-normal"><option>Venta</option><option>Ajuste</option></select></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Concepto<Input value={adjustment.concept} onChange={(event) => setAdjustment({ ...adjustment, concept: event.target.value })} placeholder="Ej. Regalía septiembre 2026"/></label><label className="space-y-2 text-sm font-bold">Importe<Input value={adjustment.amount} onChange={(event) => setAdjustment({ ...adjustment, amount: event.target.value })} inputMode="numeric" placeholder="$ 0"/></label><label className="space-y-2 text-sm font-bold">Efecto en la cuenta<select value={adjustment.effect} onChange={(event) => setAdjustment({ ...adjustment, effect: event.target.value })} className="h-9 w-full rounded-md border bg-white px-3 font-normal"><option value="increase">Positivo · aumenta la deuda</option><option value="decrease">Negativo · disminuye la deuda</option></select></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Observaciones<Textarea value={adjustment.notes} onChange={(event) => setAdjustment({ ...adjustment, notes: event.target.value })} placeholder="Detalle o período de la regalía"/></label></div><div className="rounded-2xl bg-[#f7f3f5] p-4 text-sm"><div className="flex justify-between"><span>Saldo actual</span><b>{money(balance)}</b></div><div className="mt-2 flex justify-between border-t pt-2"><span>Saldo después del movimiento</span><b>{money(balance + (adjustment.effect === "decrease" ? -1 : 1) * (Number(adjustment.amount.replace(/\D/g, "")) || 0))}</b></div></div><DialogFooter><Button variant="outline" onClick={() => setAdjustmentOpen(false)}>Cancelar</Button><Button disabled={saving} onClick={saveAdjustment} className="bg-[#3b2931] text-white">{saving ? "Guardando…" : "Registrar movimiento"}</Button></DialogFooter></DialogContent></Dialog>
   </section>;
