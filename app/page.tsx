@@ -1298,13 +1298,7 @@ function Dispatch({ clients, availableUnits, onConfirm }: { clients: Client[]; a
             <Button type="submit" size="icon" className="size-12 rounded-xl bg-[#3c2931]"><Barcode /></Button>
           </form>
           {message && <p className={`mt-2 text-sm font-bold ${message.type === "error" ? "text-red-600" : "text-emerald-700"}`}>{message.text}</p>}
-          <div className="mt-5 rounded-2xl border border-dashed bg-[#fff9fb] p-4">
-            <p className="text-xs font-black uppercase tracking-wider text-[#a94068]">Códigos para probar ahora</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {["004528", "004527", "CAJ00084"].map((code) => <button key={code} type="button" onClick={() => scan(code)} className="rounded-lg border bg-white px-3 py-2 font-mono text-sm font-bold hover:border-[#ed94b5]">{code}</button>)}
-            </div>
-            <p className="mt-3 text-xs text-muted-foreground">También podés escribir el código y presionar Enter. Eso simula exactamente un lector USB.</p>
-          </div>
+
         </div>
       </section>
       <section className="rounded-[26px] border bg-white p-6 shadow-sm">
