@@ -524,7 +524,9 @@ function Metric({
   );
 }
 
-function Dashboard({ setView, role }: { setView: (v: View) => void; role: StaffMember["role"] }) {
+function Dashboard({ setView, role, currentUser }: { setView: (v: View) => void; role: StaffMember["role"]; currentUser: StaffMember | null }) {
+  const firstName = currentUser?.displayName?.trim().split(/\s+/)[0] ?? "";
+  const greetingName = currentUser?.email?.toLowerCase() === "evelindemasi@gmail.com" ? "Eve" : firstName;
   return (
     <div className="space-y-7">
       <section className="munna-hero relative overflow-hidden rounded-[28px] bg-[#3c2931] px-6 py-7 text-white md:px-9">
@@ -533,7 +535,7 @@ function Dashboard({ setView, role }: { setView: (v: View) => void; role: StaffM
             Jueves 27 de agosto
           </p>
           <h2 className="text-3xl font-black tracking-tight md:text-4xl">
-            Buen día, Rever.
+            Buen día{greetingName ? `, ${greetingName}` : ""}.
           </h2>
           <p className="mt-3 max-w-lg text-sm leading-6 text-[#e9dce1]">
             La producción está al día. Hay 2 productos con stock bajo y un
@@ -3333,7 +3335,7 @@ export default function Home() {
           <div className={`mb-4 rounded-xl border px-4 py-2 text-sm font-bold ${databaseStatus === "live" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : databaseStatus === "error" ? "border-red-200 bg-red-50 text-red-700" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
             {databaseStatus === "live" ? "Sistema real activo · producción, stock y despachos quedan guardados" : databaseStatus === "error" ? "Sin conexión con la base de datos · no cargues movimientos hasta reconectar" : "Conectando con la base de datos…"}
           </div>
-          {view === "inicio" && <Dashboard setView={setView} role={currentUser?.role ?? "administracion"} />}{" "}
+          {view === "inicio" && <Dashboard setView={setView} role={currentUser?.role ?? "administracion"} currentUser={currentUser} />}{" "}
           {view === "produccion" && (
             <Production
               records={shiftRecords}
