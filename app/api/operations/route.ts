@@ -6,6 +6,7 @@ import {
   discountKeyForFamily,
   findProductFamily,
   normalizeProductFamilyDiscounts,
+  type ProductFamilyDefinition,
 } from "@/lib/product-families";
 
 type Row = Record<string, any>;
@@ -216,12 +217,44 @@ function dispatchRow(row: Row) {
   };
 }
 
-function clientRow(row: Row) {
+function productFamilyRow(row: Row): ProductFamilyDefinition {
+  return {
+    id: n(row.id),
+    value: String(row.name ?? ""),
+    label: String(row.label ?? row.name ?? ""),
+    discountKey: String(row.discount_key ?? ""),
+    requiresPackageWeight: row.requires_package_weight === true,
+    unitType: String(row.unit_type ?? "unidad") === "kg" ? "kg" : "unidad",
+  };
+}
+
+async function loadProductFamilies(supabase: Row, activeOnly = true): Promise<ProductFamilyDefinition[]> {
+  let query = supabase.from("product_families").select("id,name,label,discount_key,requires_package_weight,unit_type,active").order("id");
+  if (activeOnly) query = query.eq("active", true);
+  const result = await query;
+  if (result.error) throw result.error;
+  return (result.data ?? []).map(productFamilyRow);
+}
+
+const normalizedFamilyName = (value: unknown) => String(value ?? "")
+  .normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .trim()
+  .toLocaleLowerCase("es-AR");
+
+const familyDiscountKey = (value: unknown) => {
+  const slug = normalizedFamilyName(value)
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return slug && /^[a-z]/.test(slug) ? slug : slug ? `familia_${slug}` : "";
+};
+
+function clientRow(row: Row, families: ProductFamilyDefinition[]) {
   return {
     id: n(row.id),
     name: String(row.name ?? ""),
     kind: String(row.kind ?? "Cliente"),
-    discounts: normalizeProductFamilyDiscounts(row.discounts),
+    discounts: normalizeProductFamilyDiscounts(row.discounts, families),
     returnable: row.returnable !== false,
     billingWeight: String(row.billing_weight ?? "Neto") === "Bruto" ? "Bruto" : "Neto",
     active: row.active !== false,
@@ -232,7 +265,7 @@ export async function GET() {
   try {
     const { profile, supabase } = await context();
     const productionSelect = "*, products(code,name,family,presentation,container), responsible:profiles!production_units_responsible_id_fkey(display_name), dispatch_items(dispatches(remittance_number,clients(name)))";
-    const [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, recipesResult, productsResult, clientsResult] = await Promise.all([
+    const [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, recipesResult, productsResult, clientsResult, productFamiliesResult] = await Promise.all([
       supabase.from("production_units").select(productionSelect).order("id", { ascending: false }).limit(5000),
       supabase.from("dispatches").select("*, clients(name), dispatch_items(*, production_units(unique_code,weight_kg,units,products(code,name,family,presentation,container)))").order("id", { ascending: false }).limit(5000),
       supabase.from("customer_payments").select("*, clients(name)").order("id", { ascending: false }).limit(500),
@@ -247,12 +280,14 @@ export async function GET() {
       supabase.from("recipes").select("*, products(code,name,family,presentation,container,unit_type,tare_kg), recipe_items(id,purchased_product_id,quantity_kg,purchased_products(master_name,last_final_cost_per_unit,cost_unit))").eq("active", true).order("name"),
       supabase.from("products").select("code,name,family,presentation,container,unit_type,tare_kg,base_price,ingredients,expiry_days,active").order("name"),
       supabase.from("clients").select("id,name,kind,discounts,returnable,billing_weight,active").eq("active", true).order("name"),
+      supabase.from("product_families").select("id,name,label,discount_key,requires_package_weight,unit_type,active").eq("active", true).order("id"),
     ]);
-    const firstError = [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, recipesResult, productsResult, clientsResult].find((r) => r.error)?.error;
+    const firstError = [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, recipesResult, productsResult, clientsResult, productFamiliesResult].find((r) => r.error)?.error;
     if (firstError) throw firstError;
 
     const allUnits = (unitsResult.data ?? []).map(productionRow);
     const allDispatches = (dispatchResult.data ?? []).map(dispatchRow);
+    const productFamilyRows = (productFamiliesResult.data ?? []).map(productFamilyRow);
     const canSeeFinancials = profile.role === "administracion";
     const canSeeCosts = canSeeFinancials || profile.role === "jefe_produccion";
     const lastNumeric = allUnits.map((u) => Number(u.uniqueCode)).filter(Number.isFinite).reduce((max, code) => Math.max(max, code), 4529);
@@ -445,7 +480,8 @@ export async function GET() {
       suppliers: canSeeFinancials ? supplierRows : [],
       formulas: canSeeCosts ? formulaRows : [],
       formulaReferencesAvailable: formulaLinks.available,
-      clients: (clientsResult.data ?? []).map(clientRow),
+      clients: (clientsResult.data ?? []).map((row: Row) => clientRow(row, productFamilyRows)),
+      productFamilies: productFamilyRows,
       productProfiles: (productsResult.data ?? []).map((r: Row) => ({
         code: String(r.code),
         name: String(r.name),
@@ -475,7 +511,7 @@ export async function POST(request: Request) {
   try {
     const { user, profile, supabase } = await context();
     const payload = await request.json() as Row;
-    const financial = ["register-credit-note", "register-purchase", "update-purchase", "delete-purchase", "mark-purchase-paid", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "update-supplier", "archive-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "save-client", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
+    const financial = ["register-credit-note", "register-purchase", "update-purchase", "delete-purchase", "mark-purchase-paid", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "update-supplier", "archive-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "save-client", "save-product-family", "archive-product-family", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
     if (financial.includes(String(payload.action)) && profile.role !== "administracion") return Response.json({ error: "No tenés permiso para esta operación." }, { status: 403 });
 
     if (payload.action === "register-production") {
@@ -523,15 +559,57 @@ export async function POST(request: Request) {
       return Response.json({ unit: saved.data, costPerKgSnapshot }, { status: 201 });
     }
 
+    if (payload.action === "save-product-family") {
+      const name = String((payload.productFamily as Row)?.name ?? "").trim();
+      if (!name) return Response.json({ error: "Ingresá el nombre de la familia." }, { status: 400 });
+      if (name.length > 60) return Response.json({ error: "El nombre puede tener hasta 60 caracteres." }, { status: 400 });
+      const families = await loadProductFamilies(supabase, false);
+      const matching = families.find((family) => normalizedFamilyName(family.value) === normalizedFamilyName(name));
+      if (matching) {
+        const current = await supabase.from("product_families").select("active").eq("id", matching.id).single();
+        if (current.error) throw current.error;
+        if (current.data.active !== false) return Response.json({ error: "Esa familia ya existe." }, { status: 409 });
+        const restored = await supabase.from("product_families").update({ name, label: name, active: true }).eq("id", matching.id).select().single();
+        if (restored.error) throw restored.error;
+        return Response.json({ productFamily: productFamilyRow(restored.data) });
+      }
+      const discountKey = familyDiscountKey(name);
+      if (!discountKey) return Response.json({ error: "Usá al menos una letra o un número en el nombre." }, { status: 400 });
+      const saved = await supabase.from("product_families").insert({
+        name,
+        label: name,
+        discount_key: discountKey,
+        requires_package_weight: false,
+        unit_type: "unidad",
+      }).select().single();
+      if (saved.error?.code === "23505") return Response.json({ error: "Esa familia ya existe." }, { status: 409 });
+      if (saved.error) throw saved.error;
+      return Response.json({ productFamily: productFamilyRow(saved.data) }, { status: 201 });
+    }
+
+    if (payload.action === "archive-product-family") {
+      const familyId = n(payload.productFamilyId);
+      const familyResult = await supabase.from("product_families").select("id,name,active").eq("id", familyId).maybeSingle();
+      if (familyResult.error) throw familyResult.error;
+      if (!familyResult.data || familyResult.data.active === false) return Response.json({ error: "La familia ya no está disponible." }, { status: 404 });
+      const productsResult = await supabase.from("products").select("id").eq("family", familyResult.data.name).eq("active", true).limit(1);
+      if (productsResult.error) throw productsResult.error;
+      if ((productsResult.data ?? []).length > 0) return Response.json({ error: "No se puede eliminar porque todavía tiene productos activos. Reasignalos primero a otra familia." }, { status: 409 });
+      const archived = await supabase.from("product_families").update({ active: false }).eq("id", familyId).select("id").single();
+      if (archived.error) throw archived.error;
+      return Response.json({ archived: true });
+    }
+
     if (payload.action === "save-client") {
       const client = payload.client as Row;
       const clientId = n(client?.id);
       const name = String(client?.name ?? "").trim();
       if (!name) return Response.json({ error: "Ingresá el nombre o razón social." }, { status: 400 });
+      const families = await loadProductFamilies(supabase);
       const values = {
         name,
         kind: String(client.kind ?? "Cliente").trim() || "Cliente",
-        discounts: normalizeProductFamilyDiscounts(client.discounts),
+        discounts: normalizeProductFamilyDiscounts(client.discounts, families),
         returnable: client.returnable !== false,
         billing_weight: String(client.billingWeight ?? "Neto") === "Bruto" ? "Bruto" : "Neto",
         active: client.active !== false,
@@ -541,7 +619,7 @@ export async function POST(request: Request) {
         : await supabase.from("clients").insert(values).select().single();
       if (saved.error?.code === "23505") return Response.json({ error: "Ya existe un cliente con ese nombre." }, { status: 409 });
       if (saved.error) throw saved.error;
-      return Response.json({ client: clientRow(saved.data) }, { status: clientId > 0 ? 200 : 201 });
+      return Response.json({ client: clientRow(saved.data, families) }, { status: clientId > 0 ? 200 : 201 });
     }
 
     if (payload.action === "create-dispatch") {
@@ -550,7 +628,8 @@ export async function POST(request: Request) {
       if (!codes.length || !incomingClient?.name) return Response.json({ error: "Faltan cliente o productos." }, { status: 400 });
       let { data: client } = await supabase.from("clients").select("*").eq("name", String(incomingClient.name)).maybeSingle();
       if (!client) {
-        const created = await supabase.from("clients").insert({ name: String(incomingClient.name), kind: String(incomingClient.kind ?? "Cliente"), discounts: normalizeProductFamilyDiscounts(incomingClient.discounts), returnable: incomingClient.returnable !== false, billing_weight: String(incomingClient.billingWeight ?? "Neto") }).select().single();
+        const families = await loadProductFamilies(supabase);
+        const created = await supabase.from("clients").insert({ name: String(incomingClient.name), kind: String(incomingClient.kind ?? "Cliente"), discounts: normalizeProductFamilyDiscounts(incomingClient.discounts, families), returnable: incomingClient.returnable !== false, billing_weight: String(incomingClient.billingWeight ?? "Neto") }).select().single();
         if (created.error) throw created.error;
         client = created.data;
       }
@@ -558,10 +637,11 @@ export async function POST(request: Request) {
       if (unitsResult.error) throw unitsResult.error;
       const units = unitsResult.data ?? [];
       if (units.length !== codes.length) return Response.json({ error: "Uno o más códigos ya no están disponibles en stock." }, { status: 409 });
-      const discounts = normalizeProductFamilyDiscounts(incomingClient.discounts ?? client.discounts);
+      const families = await loadProductFamilies(supabase);
+      const discounts = normalizeProductFamilyDiscounts(incomingClient.discounts ?? client.discounts, families);
       const lines = units.map((unit: Row) => {
         const family = String(one(unit.products)?.family ?? "Helado");
-        const discountKey = discountKeyForFamily(family) ?? "helado";
+        const discountKey = discountKeyForFamily(family, families) ?? "helado";
         const discount = n(discounts[discountKey]);
         const quantity = n(unit.weight_kg ?? unit.units);
         const subtotal = quantity * n(unit.base_price_snapshot);
@@ -674,7 +754,8 @@ export async function POST(request: Request) {
       const code = String(product?.code ?? "").trim();
       const name = String(product?.name ?? "").trim();
       const requestedFamily = String(product?.family ?? "").trim();
-      const familyDefinition = findProductFamily(requestedFamily);
+      const families = await loadProductFamilies(supabase);
+      const familyDefinition = findProductFamily(requestedFamily, families);
       const packageWeightKg = n(product?.packageWeightKg);
       if (!code || !name || !familyDefinition) return Response.json({ error: "Completá código, nombre y familia." }, { status: 400 });
       const family = familyDefinition.value;

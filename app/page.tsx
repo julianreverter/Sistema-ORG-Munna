@@ -42,6 +42,7 @@ import {
   discountKeyForFamily,
   findProductFamily,
   normalizeProductFamilyDiscounts,
+  type ProductFamilyDefinition,
   type ProductFamilyDiscounts,
 } from "@/lib/product-families";
 import {
@@ -1234,12 +1235,12 @@ function Reports({ rows }: { rows: ProductionHistoryRow[] }) {
   </section>;
 }
 
-function discountFor(client: Client, family: string) {
-  const discountKey = discountKeyForFamily(family);
+function discountFor(client: Client, family: string, productFamilies: ProductFamilyDefinition[]) {
+  const discountKey = discountKeyForFamily(family, productFamilies);
   return discountKey ? client.discounts[discountKey] ?? 0 : 0;
 }
 
-function Dispatch({ clients, availableUnits, onConfirm }: { clients: Client[]; availableUnits: ProductionRecord[]; onConfirm: (codes: string[], client: Client) => Promise<void> }) {
+function Dispatch({ clients, productFamilies, availableUnits, onConfirm }: { clients: Client[]; productFamilies: ProductFamilyDefinition[]; availableUnits: ProductionRecord[]; onConfirm: (codes: string[], client: Client) => Promise<void> }) {
   const [clientId, setClientId] = useState(clients[0]?.id ?? 0);
   const [scanValue, setScanValue] = useState("");
   const [lines, setLines] = useState<ProductionRecord[]>([]);
@@ -1252,7 +1253,7 @@ function Dispatch({ clients, availableUnits, onConfirm }: { clients: Client[]; a
     if (!selectedClient) return 0;
     const billableWeight = record.weight === null ? null : record.weight + (selectedClient.billingWeight === "Bruto" ? tareFor(record) : 0);
     const subtotal = billableWeight === null ? record.price : billableWeight * record.price;
-    return subtotal * (1 - discountFor(selectedClient, record.family) / 100);
+    return subtotal * (1 - discountFor(selectedClient, record.family, productFamilies) / 100);
   };
   const total = lines.reduce((sum, record) => sum + lineAmount(record), 0);
   const totalWeight = lines.reduce((sum, record) => sum + (record.weight ?? 0), 0);
@@ -1288,7 +1289,7 @@ function Dispatch({ clients, availableUnits, onConfirm }: { clients: Client[]; a
         <div className="mt-6 space-y-4">
           <div className="rounded-2xl bg-[#fff4f8] p-4">
             <p className="text-xs text-muted-foreground">Descuentos asignados</p>
-            <p className="mt-1 text-sm font-black">{PRODUCT_FAMILIES.map((family) => `${family.label} ${selectedClient?.discounts[family.discountKey] ?? 0}%`).join(" · ")}</p>
+            <p className="mt-1 text-sm font-black">{productFamilies.map((family) => `${family.label} ${selectedClient?.discounts[family.discountKey] ?? 0}%`).join(" · ")}</p>
           </div>
           <div className="rounded-2xl bg-[#f2f7f3] p-4">
             <p className="text-xs text-muted-foreground">Modalidad de envase</p>
@@ -1317,7 +1318,7 @@ function Dispatch({ clients, availableUnits, onConfirm }: { clients: Client[]; a
               <div className="grid size-9 place-items-center rounded-xl bg-[#fbe7ef] text-[#ad416a]"><PackageCheck className="size-4" /></div>
               <div>
                 <p className="text-sm font-bold">{record.productName}</p>
-                <p className="text-xs text-muted-foreground">#{record.uniqueCode} · {record.weight !== null ? `${record.weight.toLocaleString("es-AR", { minimumFractionDigits: 3 })} kg ${selectedClient?.billingWeight.toLowerCase()}` : `${record.units} unidades`} · Desc. {selectedClient ? discountFor(selectedClient, record.family) : 0}%</p>
+                <p className="text-xs text-muted-foreground">#{record.uniqueCode} · {record.weight !== null ? `${record.weight.toLocaleString("es-AR", { minimumFractionDigits: 3 })} kg ${selectedClient?.billingWeight.toLowerCase()}` : `${record.units} unidades`} · Desc. {selectedClient ? discountFor(selectedClient, record.family, productFamilies) : 0}%</p>
               </div>
               <div className="text-right"><p className="text-sm font-black">{currency.format(lineAmount(record))}</p><button onClick={() => setLines((current) => current.filter((item) => item.uniqueCode !== record.uniqueCode))} className="text-xs font-bold text-[#a94068]">Quitar</button></div>
             </div>
@@ -1341,21 +1342,27 @@ function Dispatch({ clients, availableUnits, onConfirm }: { clients: Client[]; a
 
 type ProductProfile = Product & { packageWeightKg?: number; unitType?: "kg" | "unidad"; active?: boolean };
 
-function Products() {
+function Products({ productFamilies, setProductFamilies }: { productFamilies: ProductFamilyDefinition[]; setProductFamilies: StateDispatch<SetStateAction<ProductFamilyDefinition[]>> }) {
   const [products, setProducts] = useState<ProductProfile[]>(productCatalog);
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<ProductProfile | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deletingCode, setDeletingCode] = useState("");
+  const [familyOpen, setFamilyOpen] = useState(false);
+  const [familyName, setFamilyName] = useState("");
+  const [savingFamily, setSavingFamily] = useState(false);
+  const [archivingFamilyId, setArchivingFamilyId] = useState<number | null>(null);
+  const [familyError, setFamilyError] = useState("");
   const [saveError, setSaveError] = useState("");
   const [message, setMessage] = useState("");
 
   useEffect(() => {
     fetch("/api/operations")
       .then(async (response) => {
-        const data = await response.json() as { productProfiles?: ProductProfile[]; error?: string };
+        const data = await response.json() as { productProfiles?: ProductProfile[]; productFamilies?: ProductFamilyDefinition[]; error?: string };
         if (!response.ok) throw new Error(data.error ?? "No se pudieron cargar los perfiles.");
+        if (data.productFamilies?.length) setProductFamilies(data.productFamilies);
         const saved = data.productProfiles ?? [];
         for (const product of saved) {
           if (product.active === false) inactiveProductCodes.add(product.code);
@@ -1369,7 +1376,7 @@ function Products() {
         setProducts(runtimeProductCatalog.filter((item) => !inactiveProductCodes.has(item.code)));
       })
       .catch((error) => setSaveError(error instanceof Error ? error.message : "No se pudieron cargar los perfiles."));
-  }, []);
+  }, [setProductFamilies]);
 
   const rows = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -1386,15 +1393,15 @@ function Products() {
     maximumFractionDigits: 0,
   });
   const needsPackageWeight = (product: ProductProfile) =>
-    findProductFamily(product.family)?.requiresPackageWeight === true;
-  const familyCounts = useMemo(() => new Map(PRODUCT_FAMILIES.map((family) => [
+    findProductFamily(product.family, productFamilies)?.requiresPackageWeight === true;
+  const familyCounts = useMemo(() => new Map(productFamilies.map((family) => [
     family.value,
     products.filter((product) => product.family === family.value).length,
-  ])), [products]);
+  ])), [productFamilies, products]);
   const emptyProduct = (): ProductProfile => ({
     code: "",
     name: "",
-    family: PRODUCT_FAMILIES[0].value,
+    family: productFamilies[0]?.value ?? PRODUCT_FAMILIES[0].value,
     presentation: "",
     container: "",
     price: 0,
@@ -1410,7 +1417,7 @@ function Products() {
       setSaveError("Completá el código y el nombre del producto.");
       return;
     }
-    if (!findProductFamily(editing.family)) {
+    if (!findProductFamily(editing.family, productFamilies)) {
       setSaveError("Elegí una familia de productos de la lista.");
       return;
     }
@@ -1448,6 +1455,58 @@ function Products() {
       setSaveError(error instanceof Error ? error.message : "No se pudo guardar el producto.");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const saveProductFamily = async () => {
+    if (!familyName.trim()) {
+      setFamilyError("Ingresá el nombre de la familia.");
+      return;
+    }
+    setSavingFamily(true);
+    setFamilyError("");
+    setMessage("");
+    try {
+      const response = await fetch("/api/operations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "save-product-family", productFamily: { name: familyName } }),
+      });
+      const data = await response.json() as { productFamily?: ProductFamilyDefinition; error?: string };
+      if (!response.ok || !data.productFamily) throw new Error(data.error ?? "No se pudo crear la familia.");
+      setProductFamilies((current) => current.some((family) => family.id === data.productFamily?.id)
+        ? current.map((family) => family.id === data.productFamily?.id ? data.productFamily as ProductFamilyDefinition : family)
+        : [...current, data.productFamily as ProductFamilyDefinition]);
+      setFamilyName("");
+      setFamilyOpen(false);
+      setMessage(`${data.productFamily.label} fue agregada y ya está disponible al crear productos.`);
+    } catch (error) {
+      setFamilyError(error instanceof Error ? error.message : "No se pudo crear la familia.");
+    } finally {
+      setSavingFamily(false);
+    }
+  };
+
+  const archiveProductFamily = async (family: ProductFamilyDefinition) => {
+    if (!family.id) return;
+    setArchivingFamilyId(family.id);
+    setFamilyError("");
+    setSaveError("");
+    setMessage("");
+    try {
+      const response = await fetch("/api/operations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "archive-product-family", productFamilyId: family.id }),
+      });
+      const data = await response.json() as { archived?: boolean; error?: string };
+      if (!response.ok || !data.archived) throw new Error(data.error ?? "No se pudo eliminar la familia.");
+      setProductFamilies((current) => current.filter((item) => item.id !== family.id));
+      setMessage(`${family.label} fue eliminada. Los datos históricos se conservaron.`);
+    } catch (error) {
+      setFamilyError(error instanceof Error ? error.message : "No se pudo eliminar la familia.");
+    } finally {
+      setArchivingFamilyId(null);
     }
   };
 
@@ -1495,10 +1554,33 @@ function Products() {
       {message && <p className="mb-4 rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800">{message}</p>}
       {saveError && !editing && <p className="mb-4 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{saveError}</p>}
       <div className="mb-5 rounded-2xl border bg-[#fff8fb] p-4">
-        <p className="font-black">Familias de productos</p>
-        <p className="mb-3 text-xs text-muted-foreground">Esta lista se usa al crear productos y para los descuentos de cada cliente.</p>
+        <div className="mb-3 flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+          <div>
+            <p className="font-black">Familias de productos</p>
+            <p className="text-xs text-muted-foreground">Esta lista se usa al crear productos y para los descuentos de cada cliente.</p>
+          </div>
+          <Button variant="outline" size="sm" className="rounded-xl bg-white" onClick={() => { setFamilyError(""); setFamilyName(""); setFamilyOpen(true); }}>
+            <Plus /> Nueva familia
+          </Button>
+        </div>
+        {familyError && !familyOpen && <p className="mb-3 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{familyError}</p>}
         <div className="flex flex-wrap gap-2">
-          {PRODUCT_FAMILIES.map((family) => <Badge key={family.value} variant="outline" className="rounded-full bg-white px-3 py-1.5">{family.label} · {familyCounts.get(family.value) ?? 0}</Badge>)}
+          {productFamilies.map((family) => (
+            <div key={family.id ?? family.value} className="flex items-center overflow-hidden rounded-full border bg-white pl-3 text-sm">
+              <span className="py-1.5">{family.label} · {familyCounts.get(family.value) ?? 0}</span>
+              {family.id && (
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <button type="button" aria-label={`Eliminar ${family.label}`} className="ml-2 grid self-stretch place-items-center border-l px-2 text-muted-foreground hover:bg-red-50 hover:text-red-700"><Trash2 className="size-3.5" /></button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader><AlertDialogTitle>¿Eliminar la familia {family.label}?</AlertDialogTitle><AlertDialogDescription>Solo se podrá eliminar si no tiene productos activos. Los datos históricos se conservarán.</AlertDialogDescription></AlertDialogHeader>
+                    <AlertDialogFooter><AlertDialogCancel>Cancelar</AlertDialogCancel><AlertDialogAction disabled={archivingFamilyId === family.id} onClick={() => archiveProductFamily(family)} className="bg-red-600 text-white hover:bg-red-700">{archivingFamilyId === family.id ? "Eliminando…" : "Sí, eliminar"}</AlertDialogAction></AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              )}
+            </div>
+          ))}
         </div>
       </div>
       <div className="max-h-[650px] overflow-auto rounded-2xl border">
@@ -1538,16 +1620,24 @@ function Products() {
               <label className="space-y-2 text-sm font-bold">Código<Input value={editing.code} readOnly={!isCreating} onChange={(event) => setEditing({ ...editing, code: event.target.value })} className="font-mono font-normal" /></label>
               <label className="space-y-2 text-sm font-bold">Precio base<Input type="number" value={editing.price} onChange={(event) => setEditing({ ...editing, price: Number(event.target.value) })} className="font-normal" /></label>
               <label className="space-y-2 text-sm font-bold sm:col-span-2">Nombre para sistema y etiqueta<Input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} className="font-normal" /></label>
-              <label className="space-y-2 text-sm font-bold">Familia<select value={editing.family} onChange={(event) => setEditing({ ...editing, family: event.target.value })} className="h-10 w-full rounded-md border bg-white px-3 font-normal">{PRODUCT_FAMILIES.map((family) => <option key={family.value} value={family.value}>{family.label}</option>)}</select></label>
+              <label className="space-y-2 text-sm font-bold">Familia<select value={editing.family} onChange={(event) => setEditing({ ...editing, family: event.target.value })} className="h-10 w-full rounded-md border bg-white px-3 font-normal">{productFamilies.map((family) => <option key={family.value} value={family.value}>{family.label}</option>)}</select></label>
               <label className="space-y-2 text-sm font-bold">Presentación<Input value={editing.presentation} onChange={(event) => setEditing({ ...editing, presentation: event.target.value })} className="font-normal" /></label>
               <label className="space-y-2 text-sm font-bold">Envase<Input value={editing.container} onChange={(event) => setEditing({ ...editing, container: event.target.value })} className="font-normal" /></label>
               <label className="space-y-2 text-sm font-bold">Vencimiento (días)<Input type="number" value={editing.expiryDays} onChange={(event) => setEditing({ ...editing, expiryDays: Number(event.target.value) })} className="font-normal" /></label>
-              {editing.family !== "Helado" && <label className="space-y-2 text-sm font-bold sm:col-span-2">Peso neto de la presentación (kg)<Input value={editing.packageWeightKg ?? ""} onChange={(event) => setEditing({ ...editing, packageWeightKg: Number(event.target.value.replace(",", ".")) || 0 })} inputMode="decimal" placeholder="Ej. 7,120" className="font-normal" /><span className="block text-xs font-normal text-muted-foreground">Ejemplo: una caja de 20 alfajores que pesa 7,120 kg. La fórmula sigue expresada por 1 kg y el sistema multiplica ese costo por este peso.</span></label>}
+              {needsPackageWeight(editing) && <label className="space-y-2 text-sm font-bold sm:col-span-2">Peso neto de la presentación (kg)<Input value={editing.packageWeightKg ?? ""} onChange={(event) => setEditing({ ...editing, packageWeightKg: Number(event.target.value.replace(",", ".")) || 0 })} inputMode="decimal" placeholder="Ej. 7,120" className="font-normal" /><span className="block text-xs font-normal text-muted-foreground">Ejemplo: una caja de 20 alfajores que pesa 7,120 kg. La fórmula sigue expresada por 1 kg y el sistema multiplica ese costo por este peso.</span></label>}
               <label className="space-y-2 text-sm font-bold sm:col-span-2">Ingredientes<Textarea value={editing.ingredients} placeholder="Pendiente de completar" onChange={(event) => setEditing({ ...editing, ingredients: event.target.value })} className="min-h-24 font-normal" /></label>
             </div>
           )}
           {saveError && editing && <p className="text-sm font-bold text-red-600">{saveError}</p>}
           <DialogFooter><Button variant="outline" onClick={() => { setEditing(null); setIsCreating(false); }}>Cancelar</Button><Button disabled={saving} className="bg-[#ed94b5] font-black text-[#3c2931] hover:bg-[#f2a8c3]" onClick={saveProductProfile}>{saving ? "Guardando…" : isCreating ? "Crear producto" : "Guardar cambios"}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={familyOpen} onOpenChange={(open) => { setFamilyOpen(open); if (!open) { setFamilyName(""); setFamilyError(""); } }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader><DialogTitle>Nueva familia de productos</DialogTitle><DialogDescription>Escribí el nombre que querés ver en Productos, Clientes y Despachos.</DialogDescription></DialogHeader>
+          <label className="space-y-2 text-sm font-bold">Nombre de la familia<Input autoFocus value={familyName} onChange={(event) => setFamilyName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void saveProductFamily(); } }} placeholder="Ej. Chocolatería" className="font-normal" /></label>
+          {familyError && <p className="text-sm font-bold text-red-600">{familyError}</p>}
+          <DialogFooter><Button variant="outline" onClick={() => setFamilyOpen(false)}>Cancelar</Button><Button disabled={savingFamily || !familyName.trim()} onClick={saveProductFamily} className="bg-[#ed94b5] font-black text-[#3c2931] hover:bg-[#f2a8c3]">{savingFamily ? "Guardando…" : "Crear familia"}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
     </section>
@@ -1570,7 +1660,7 @@ const initialClients: Client[] = [
   { id: 4, name: "Evento ocasional", kind: "Evento", discounts: normalizeProductFamilyDiscounts({}), returnable: false, billingWeight: "Bruto", active: true },
 ];
 
-function Clients({ clients, setClients }: { clients: Client[]; setClients: StateDispatch<SetStateAction<Client[]>> }) {
+function Clients({ clients, setClients, productFamilies }: { clients: Client[]; setClients: StateDispatch<SetStateAction<Client[]>>; productFamilies: ProductFamilyDefinition[] }) {
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Client | null>(null);
   const [saving, setSaving] = useState(false);
@@ -1583,7 +1673,7 @@ function Clients({ clients, setClients }: { clients: Client[]; setClients: State
     id: 0,
     name: "",
     kind: "Franquicia",
-    discounts: normalizeProductFamilyDiscounts({}),
+    discounts: normalizeProductFamilyDiscounts({}, productFamilies),
     returnable: true,
     billingWeight: "Neto",
     active: true,
@@ -1652,7 +1742,7 @@ function Clients({ clients, setClients }: { clients: Client[]; setClients: State
                 <TableCell className="font-bold">{client.name}</TableCell>
                 <TableCell>{client.kind}</TableCell>
                 <TableCell className="max-w-xs text-xs leading-5">
-                  {PRODUCT_FAMILIES.map((family) => `${family.label} ${client.discounts[family.discountKey] ?? 0}%`).join(" · ")}
+                  {productFamilies.map((family) => `${family.label} ${client.discounts[family.discountKey] ?? 0}%`).join(" · ")}
                 </TableCell>
                 <TableCell>
                   <Badge variant="outline" className="rounded-full">
@@ -1661,7 +1751,7 @@ function Clients({ clients, setClients }: { clients: Client[]; setClients: State
                 </TableCell>
                 <TableCell>{client.billingWeight}</TableCell>
                 <TableCell className="text-right">
-                  <Button variant="outline" size="sm" className="rounded-lg" onClick={() => { setSaveError(""); setMessage(""); setEditing({ ...client, discounts: normalizeProductFamilyDiscounts(client.discounts) }); }}>
+                  <Button variant="outline" size="sm" className="rounded-lg" onClick={() => { setSaveError(""); setMessage(""); setEditing({ ...client, discounts: normalizeProductFamilyDiscounts(client.discounts, productFamilies) }); }}>
                     Editar
                   </Button>
                 </TableCell>
@@ -1696,7 +1786,7 @@ function Clients({ clients, setClients }: { clients: Client[]; setClients: State
               <div className="rounded-xl border bg-[#fff8fb] p-4 sm:col-span-2">
                 <p className="mb-3 text-sm font-black">Descuento por línea de producto</p>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  {PRODUCT_FAMILIES.map((family) => (
+                  {productFamilies.map((family) => (
                     <label key={family.discountKey} className="space-y-1 text-sm font-bold">
                       {family.label} (%)
                       <Input
@@ -3397,6 +3487,7 @@ export default function Home() {
   const [productionHistory, setProductionHistory] = useState<ProductionHistoryRow[]>([]);
   const [shiftRecords, setShiftRecords] = useState<ProductionRecord[]>([]);
   const [clients, setClients] = useState<Client[]>(initialClients);
+  const [productFamilies, setProductFamilies] = useState<ProductFamilyDefinition[]>(PRODUCT_FAMILIES);
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [currentUser, setCurrentUser] = useState<StaffMember | null>(null);
   const [nextUniqueCode, setNextUniqueCode] = useState("004530");
@@ -3405,7 +3496,7 @@ export default function Home() {
     let active = true;
     fetch("/api/operations")
       .then(async (response) => {
-        const data = await response.json() as { stock?: Array<Record<string, unknown>>; productionHistory?: ProductionHistoryRow[]; clients?: Client[]; staff?: StaffMember[]; currentUser?: StaffMember; nextUniqueCode?: string; productProfiles?: ProductProfile[]; error?: string };
+        const data = await response.json() as { stock?: Array<Record<string, unknown>>; productionHistory?: ProductionHistoryRow[]; clients?: Client[]; productFamilies?: ProductFamilyDefinition[]; staff?: StaffMember[]; currentUser?: StaffMember; nextUniqueCode?: string; productProfiles?: ProductProfile[]; error?: string };
         if (!response.ok) throw new Error(data.error ?? "No se pudo conectar con la base de datos.");
         if (!active) return;
         const savedProfiles = data.productProfiles ?? [];
@@ -3428,7 +3519,9 @@ export default function Home() {
         })));
         setNextUniqueCode(data.nextUniqueCode ?? "004530");
         setProductionHistory(data.productionHistory ?? []);
-        if (data.clients?.length) setClients(data.clients.map((client) => ({ ...client, discounts: normalizeProductFamilyDiscounts(client.discounts) })));
+        const loadedFamilies = data.productFamilies?.length ? data.productFamilies : PRODUCT_FAMILIES;
+        setProductFamilies(loadedFamilies);
+        if (data.clients?.length) setClients(data.clients.map((client) => ({ ...client, discounts: normalizeProductFamilyDiscounts(client.discounts, loadedFamilies) })));
         setStaff(data.staff ?? []);
         setCurrentUser(data.currentUser ?? null);
         setDatabaseStatus("live");
@@ -3497,6 +3590,7 @@ export default function Home() {
           {view === "stock" && <Stock records={productionRecords} />} {view === "historico-produccion" && <ProductionHistory rows={productionHistory} />} {view === "despacho" && (
             <Dispatch
               clients={clients}
+              productFamilies={productFamilies}
               availableUnits={productionRecords}
               onConfirm={async (codes, client) => {
                 const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "create-dispatch", codes, client }) });
@@ -3521,7 +3615,7 @@ export default function Home() {
               }}
             />
           )}{" "}
-          {view === "productos" && <Products />} {view === "clientes" && <Clients clients={clients} setClients={setClients} />}{" "}
+          {view === "productos" && <Products productFamilies={productFamilies} setProductFamilies={setProductFamilies} />} {view === "clientes" && <Clients clients={clients} setClients={setClients} productFamilies={productFamilies} />}{" "}
           {view === "cta-clientes" && <CustomerAccounts clients={clients} />}{" "}
           {view === "costos" && <Costs />}{" "}
           {view === "resultados" && <ProfitAndLoss />}{" "}

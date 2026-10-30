@@ -28,12 +28,38 @@ test("client discounts always include every family without changing existing per
   assert.deepEqual(Object.keys(discounts), PRODUCT_FAMILIES.map((family) => family.discountKey));
 });
 
-test("product creation uses a family dropdown and dispatch pricing uses the shared discount key", () => {
+test("a newly created family is available to products and client discounts", () => {
+  const dynamicFamilies = [
+    ...PRODUCT_FAMILIES,
+    { id: 7, value: "Chocolatería", label: "Chocolatería", discountKey: "chocolateria", requiresPackageWeight: false, unitType: "unidad" },
+  ];
+  assert.equal(findProductFamily("chocolateria", dynamicFamilies)?.value, "Chocolatería");
+  assert.equal(discountKeyForFamily("Chocolatería", dynamicFamilies), "chocolateria");
+  assert.equal(normalizeProductFamilyDiscounts({}, dynamicFamilies).chocolateria, 0);
+});
+
+test("the product screen manages families and dispatch pricing uses their dynamic discount key", () => {
   const page = fs.readFileSync("app/page.tsx", "utf8");
   const api = fs.readFileSync("app/api/operations/route.ts", "utf8");
   assert.match(page, /<select value=\{editing\.family\}/);
-  assert.match(page, /PRODUCT_FAMILIES\.map\(\(family\) => <option/);
+  assert.match(page, /productFamilies\.map\(\(family\) => <option/);
   assert.match(page, /Familias de productos/);
-  assert.match(api, /discountKeyForFamily\(family\)/);
+  assert.match(page, /Nueva familia de productos/);
+  assert.match(api, /discountKeyForFamily\(family, families\)/);
   assert.match(api, /action === "save-client"/);
+  assert.match(api, /action === "save-product-family"/);
+  assert.match(api, /action === "archive-product-family"/);
+});
+
+test("the product family migration seeds the catalog and protects it with RLS", () => {
+  const migration = fs.readFileSync("supabase/migrations/20261030011315_product_families_catalog.sql", "utf8");
+  assert.match(migration, /create table public\.product_families/);
+  assert.match(migration, /'Mini Tortitas'/);
+  assert.match(migration, /enable row level security/);
+  assert.match(migration, /product_families_authenticated_read/);
+  assert.match(migration, /product_families_admin_insert/);
+  assert.match(migration, /product_families_admin_update/);
+  assert.match(migration, /revoke all on table public\.product_families from public, anon, authenticated/);
+  assert.match(migration, /grant select, insert, update on table public\.product_families to authenticated/);
+  assert.doesNotMatch(migration, /grant[^;]*delete[^;]*product_families/i);
 });
