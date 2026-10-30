@@ -289,7 +289,7 @@ export async function GET() {
     const allDispatches = (dispatchResult.data ?? []).map(dispatchRow);
     const productFamilyRows = (productFamiliesResult.data ?? []).map(productFamilyRow);
     const canSeeFinancials = profile.role === "administracion";
-    const canSeeCosts = canSeeFinancials || profile.role === "jefe_produccion";
+    const canSeeCosts = canSeeFinancials;
     const lastNumeric = allUnits.map((u) => Number(u.uniqueCode)).filter(Number.isFinite).reduce((max, code) => Math.max(max, code), 4529);
     const role = profile.role === "maestro_heladero" ? "produccion" : profile.role === "jefe_produccion" ? "encargado" : "administracion";
 
@@ -443,9 +443,17 @@ export async function GET() {
       };
     });
 
+    const visibleUnits = canSeeCosts
+      ? allUnits
+      : allUnits.map((unit) => {
+          const visible = { ...unit } as Row;
+          delete visible.costPerKgSnapshot;
+          return visible;
+        });
+
     return Response.json({
-      stock: allUnits.filter((u) => u.status === "stock"),
-      productionHistory: canSeeCosts ? allUnits : allUnits.map(({ costPerKgSnapshot: _cost, ...unit }) => unit),
+      stock: visibleUnits.filter((u) => u.status === "stock"),
+      productionHistory: visibleUnits,
       recentDispatches: profile.role === "maestro_heladero" ? [] : allDispatches.slice(0, 50),
       remittances: profile.role === "maestro_heladero" ? [] : allDispatches.slice(0, 500),
       customerPayments: canSeeFinancials ? (customerPaymentsResult.data ?? []).map((r: Row) => ({ ...r, clientId: r.client_id, clientName: one(r.clients)?.name, paymentDate: r.payment_date, createdAt: r.created_at })) : [],
@@ -554,9 +562,16 @@ export async function POST(request: Request) {
         unique_code: String(record.uniqueCode), product_id: product.id, weight_kg: record.weight == null ? null : n(record.weight),
         units: record.units == null ? null : n(record.units), responsible_id: productionLead?.id ?? user.id, elaborated_by: elaboratedBy, created_by: user.id,
         base_price_snapshot: n(record.price), cost_per_kg_snapshot: costPerKgSnapshot, lot: record.lot || null, expires_at: record.expiresAt || null,
-      }).select().single();
+      }).select("id,status,created_at").single();
       if (saved.error) throw saved.error;
-      return Response.json({ unit: saved.data, costPerKgSnapshot }, { status: 201 });
+      return Response.json({
+        unit: {
+          id: saved.data.id,
+          status: saved.data.status,
+          created_at: saved.data.created_at,
+        },
+        ...(profile.role === "administracion" ? { costPerKgSnapshot } : {}),
+      }, { status: 201 });
     }
 
     if (payload.action === "save-product-family") {

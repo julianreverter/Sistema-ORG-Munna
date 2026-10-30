@@ -5,10 +5,15 @@ import vm from 'node:vm';
 import ts from 'typescript';
 const source = fs.readFileSync('app/api/operations/route.ts','utf8');
 const compiled = ts.transpileModule(source + '\nexport { recipeCalculator, recipeLinks };', {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
-function fixture({ role='administracion', rpcError=null, tables={} }={}) {
+function fixture({ role='administracion', profile={}, rpcError=null, tables={} }={}) {
   const writes=[];
-  const context={exports:{},Response,console,require(name){return name.includes('supabase') ? {createServerSupabaseClient:async()=>supabase} : {getChatGPTUser:async()=>({id:'user'})}}};
-  const supabase={from(table){let single=false,inserted=null;const q={select(){return q},eq(){return q},order(){return q},limit(){return q},neq(){return q},single(){single=true;return q},maybeSingle(){single=true;return q},insert(values){inserted=values;writes.push({table,values});return q},then(resolve){let data=table==='profiles'?[{id:'user',active:true,role}]:tables[table]??(table==='products'?[{id:20}]:[]);if(inserted)data=[{id:99,...inserted}];return Promise.resolve({data:single?data[0]??null:data,error:null}).then(resolve)}};return q}, async rpc(name,args){writes.push({name,args});return {data:{id:2,name:args.p_name},error:rpcError}}};
+  const context={exports:{},Response,console,require(name){
+    if(name.includes('supabase')) return {createServerSupabaseClient:async()=>supabase};
+    if(name.includes('production-team')) return {PRODUCTION_TEAM:['Evelin De Masi','Lucas Barre','Tomas Pierini','Milagros Anahí Méndez'],PRODUCTION_LEAD_EMAIL:'evelindemasi@gmail.com'};
+    if(name.includes('product-families')) return {discountKeyForFamily:()=>'',findProductFamily:()=>null,normalizeProductFamilyDiscounts:(discounts)=>discounts??{}};
+    return {getChatGPTUser:async()=>({id:'user'})};
+  }};
+  const supabase={from(table){let single=false,inserted=null;const q={select(){return q},eq(){return q},order(){return q},limit(){return q},neq(){return q},single(){single=true;return q},maybeSingle(){single=true;return q},insert(values){inserted=values;writes.push({table,values});return q},then(resolve){let data=table==='profiles'?(tables.profiles??[{id:'user',email:'admin@test.local',display_name:'Admin',active:true,role,...profile}]):tables[table]??(table==='products'?[{id:20}]:[]);if(inserted)data=[{id:99,...inserted}];return Promise.resolve({data:single?data[0]??null:data,error:null}).then(resolve)}};return q}, async rpc(name,args){writes.push({name,args});return {data:{id:2,name:args.p_name},error:rpcError}}};
   vm.runInNewContext(compiled,context);
   return {...context.exports,writes};
 }
@@ -72,9 +77,37 @@ test('production snapshots use the live composed formula cost',async()=>{
   const base=recipe(1,[material(1,1000)]);base.product_id=10;
   const child=recipe(2,[{...material(2,10000),quantity_kg:.1}]);child.product_id=20;
   const api=fixture({tables:{recipes:[base,child],recipe_formula_items:[{recipe_id:2,component_recipe_id:1,quantity_kg:.9}]}});
-  const response=await api.POST(new Request('http://test/api/operations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'register-production',record:{uniqueCode:'123456',productCode:'GR',weight:5}})}));
-  assert.equal(response.status,201);assert.equal((await response.json()).costPerKgSnapshot,1900);
+  const response=await api.POST(new Request('http://test/api/operations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'register-production',record:{uniqueCode:'123456',productCode:'GR',weight:5,responsible:'Admin'}})}));
+  const body=await response.json();
+  assert.equal(response.status,201,JSON.stringify(body));assert.equal(body.costPerKgSnapshot,1900);
   assert.equal(api.writes.find(row=>row.table==='production_units').values.cost_per_kg_snapshot,1900);
+});
+
+test('production supervisors never receive production costs',async()=>{
+  const base=recipe(1,[material(1,1000)]);base.product_id=10;
+  const child=recipe(2,[{...material(2,10000),quantity_kg:.1}]);child.product_id=20;
+  const profile={email:'evelindemasi@gmail.com',display_name:'Evelin De Masi'};
+  const api=fixture({role:'jefe_produccion',profile,tables:{recipes:[base,child],recipe_formula_items:[{recipe_id:2,component_recipe_id:1,quantity_kg:.9}]}});
+  const response=await api.POST(new Request('http://test/api/operations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'register-production',record:{uniqueCode:'123456',productCode:'GR',weight:5,responsible:'Evelin De Masi'}})}));
+  const body=await response.json();
+  assert.equal(response.status,201,JSON.stringify(body));
+  assert.equal(Object.hasOwn(body,'costPerKgSnapshot'),false);
+  assert.equal(Object.hasOwn(body.unit,'cost_per_kg_snapshot'),false);
+  assert.equal(api.writes.find(row=>row.table==='production_units').values.cost_per_kg_snapshot,1900);
+});
+
+test('production supervisors receive stock and history with every cost field redacted',async()=>{
+  const unit={id:1,unique_code:'000001',weight_kg:5,units:null,elaborated_by:'Evelin De Masi',base_price_snapshot:10000,cost_per_kg_snapshot:1900,status:'stock',created_at:'2026-10-29T12:00:00Z',dispatched_at:null,products:{code:'GR',name:'Granizado',family:'Helados',presentation:'Balde',container:'Balde'},dispatch_items:[]};
+  const api=fixture({role:'jefe_produccion',profile:{email:'evelindemasi@gmail.com',display_name:'Evelin De Masi'},tables:{production_units:[unit]}});
+  const response=await api.GET();
+  assert.equal(response.status,200);
+  const body=await response.json();
+  assert.equal(body.stock.length,1);
+  assert.equal(body.productionHistory.length,1);
+  assert.equal(Object.hasOwn(body.stock[0],'costPerKgSnapshot'),false);
+  assert.equal(Object.hasOwn(body.productionHistory[0],'costPerKgSnapshot'),false);
+  assert.deepEqual(body.rawMaterials,[]);
+  assert.deepEqual(body.formulas,[]);
 });
 
 test('formulas can be saved and edited without a master product',async()=>{
