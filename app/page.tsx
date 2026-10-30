@@ -326,72 +326,6 @@ const comboboxWordFilter = (itemValue: unknown, query: string) => {
   return terms.every((term) => searchable.includes(term));
 };
 
-const stockRows = [
-  {
-    code: "228",
-    name: "Chocolate",
-    pack: "Balde",
-    units: 18,
-    kg: "128,54",
-    status: "Normal",
-  },
-  {
-    code: "214",
-    name: "Pistacho",
-    pack: "Balde",
-    units: 6,
-    kg: "42,18",
-    status: "Bajo",
-  },
-  {
-    code: "131",
-    name: "Chocolate blanco c/ frambuesa",
-    pack: "Vasqueta",
-    units: 14,
-    kg: "48,92",
-    status: "Normal",
-  },
-  {
-    code: "ALF-01",
-    name: "Alfajor clásico",
-    pack: "Caja x 15",
-    units: 9,
-    kg: "—",
-    status: "Normal",
-  },
-  {
-    code: "INS-08",
-    name: "Bolsa Münna Nº 4",
-    pack: "Millar",
-    units: 2,
-    kg: "—",
-    status: "Bajo",
-  },
-];
-const recent = [
-  {
-    id: "004528",
-    detail: "Chocolate · Balde",
-    weight: "7,155 kg",
-    person: "Lucas M.",
-    time: "08:42",
-  },
-  {
-    id: "004527",
-    detail: "Pistacho · Vasqueta",
-    weight: "3,480 kg",
-    person: "Evelyn R.",
-    time: "08:37",
-  },
-  {
-    id: "004526",
-    detail: "Dulce de leche Münna · Balde",
-    weight: "6,920 kg",
-    person: "Lucas M.",
-    time: "08:31",
-  },
-];
-
 function AppSidebar({
   view,
   setView,
@@ -534,22 +468,40 @@ function Metric({
   );
 }
 
-function Dashboard({ setView, role, currentUser }: { setView: (v: View) => void; role: StaffMember["role"]; currentUser: StaffMember | null }) {
+function Dashboard({ setView, role, currentUser, stock, history }: { setView: (v: View) => void; role: StaffMember["role"]; currentUser: StaffMember | null; stock: ProductionRecord[]; history: ProductionHistoryRow[] }) {
   const firstName = currentUser?.displayName?.trim().split(/\s+/)[0] ?? "";
   const greetingName = currentUser?.email?.toLowerCase() === "evelindemasi@gmail.com" ? "Eve" : firstName;
+  const today = new Date();
+  const argentinaMonth = (value: Date | string) => new Date(value).toLocaleDateString("en-CA", { year: "numeric", month: "2-digit", timeZone: "America/Argentina/Buenos_Aires" }).slice(0, 7);
+  const dateLabel = new Intl.DateTimeFormat("es-AR", { weekday: "long", day: "numeric", month: "long", timeZone: "America/Argentina/Buenos_Aires" }).format(today);
+  const month = argentinaMonth(today);
+  const formatAmount = (value: number, maximumFractionDigits = 3) => value.toLocaleString("es-AR", { minimumFractionDigits: 0, maximumFractionDigits });
+  const iceCreamKg = stock.filter((row) => row.family === "Helado").reduce((sum, row) => sum + Number(row.weight ?? 0), 0);
+  const dispatchedThisMonth = history.filter((row) => row.dispatchedAt && argentinaMonth(row.dispatchedAt) === month).reduce((sum, row) => sum + Number(row.weightKg ?? 0), 0);
+  const stockedProducts = new Set(stock.map((row) => row.productCode)).size;
+  const recentProduction = [...history].sort((a, b) => new Date(b.producedAt).getTime() - new Date(a.producedAt).getTime()).slice(0, 3);
+  const lastDispatchedRow = [...history]
+    .filter((row) => row.dispatchedAt && row.remittanceNumber)
+    .sort((a, b) => new Date(b.dispatchedAt ?? 0).getTime() - new Date(a.dispatchedAt ?? 0).getTime())[0];
+  const lastDispatchRows = lastDispatchedRow ? history.filter((row) => row.remittanceNumber === lastDispatchedRow.remittanceNumber) : [];
+  const lastDispatchKg = lastDispatchRows.reduce((sum, row) => sum + Number(row.weightKg ?? 0), 0);
+  const operationalSummary = history.length === 0
+    ? "Todavía no hay producción cargada. El sistema está listo para comenzar."
+    : stock.length === 0
+      ? "No hay unidades disponibles en fábrica; toda la producción registrada fue despachada."
+      : `Hay ${stock.length} ${stock.length === 1 ? "unidad disponible" : "unidades disponibles"} correspondientes a ${stockedProducts} ${stockedProducts === 1 ? "producto" : "productos"}.`;
   return (
     <div className="space-y-7">
       <section className="munna-hero relative overflow-hidden rounded-[28px] bg-[#3c2931] px-6 py-7 text-white md:px-9">
         <div className="relative z-10 max-w-xl">
           <p className="mb-2 text-xs font-bold uppercase tracking-[.18em] text-[#f2a9c4]">
-            Jueves 27 de agosto
+            {dateLabel.charAt(0).toUpperCase() + dateLabel.slice(1)}
           </p>
           <h2 className="text-3xl font-black tracking-tight md:text-4xl">
             Buen día{greetingName ? `, ${greetingName}` : ""}.
           </h2>
           <p className="mt-3 max-w-lg text-sm leading-6 text-[#e9dce1]">
-            La producción está al día. Hay 2 productos con stock bajo y un
-            despacho preparado para Rojas.
+            {operationalSummary}
           </p>
           <div className="mt-6 flex flex-wrap gap-3">
             <Button
@@ -584,28 +536,28 @@ function Dashboard({ setView, role, currentUser }: { setView: (v: View) => void;
         <Metric
           icon={Boxes}
           label="Unidades disponibles"
-          value="286"
+          value={formatAmount(stock.length, 0)}
           note="Baldes, vasquetas y cajas"
         />
         <Metric
           icon={Scale}
           label="Helado disponible"
-          value="1.184 kg"
+          value={`${formatAmount(iceCreamKg)} kg`}
           note="Peso neto en cámara"
           tone="green"
         />
         <Metric
           icon={Truck}
           label="Despachado este mes"
-          value="2.438 kg"
+          value={`${formatAmount(dispatchedThisMonth)} kg`}
           note="A todas las sucursales"
           tone="brown"
         />
         <Metric
           icon={Archive}
-          label="Stock bajo"
-          value="2"
-          note="Requieren reposición"
+          label="Productos en stock"
+          value={formatAmount(stockedProducts, 0)}
+          note="Variedades disponibles"
           tone="amber"
         />
       </section>
@@ -627,23 +579,24 @@ function Dashboard({ setView, role, currentUser }: { setView: (v: View) => void;
             </Button>
           </div>
           <div className="space-y-2">
-            {recent.map((row) => (
+            {recentProduction.length === 0 && <div className="rounded-2xl border border-dashed p-8 text-center text-sm text-muted-foreground">Todavía no hay producción registrada.</div>}
+            {recentProduction.map((row) => (
               <div
-                key={row.id}
+                key={row.uniqueCode}
                 className="flex items-center gap-4 rounded-2xl p-3 hover:bg-[#fff9fb]"
               >
                 <div className="grid size-10 place-items-center rounded-xl bg-[#fdeaf1] text-[#ae456d]">
                   <Barcode className="size-5" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-bold">{row.detail}</p>
+                  <p className="truncate text-sm font-bold">{row.productName} · {row.container}</p>
                   <p className="text-xs text-muted-foreground">
-                    #{row.id} · {row.person}
+                    #{row.uniqueCode} · {row.responsible}
                   </p>
                 </div>
                 <div className="text-right">
-                  <p className="text-sm font-black">{row.weight}</p>
-                  <p className="text-xs text-muted-foreground">{row.time}</p>
+                  <p className="text-sm font-black">{row.weightKg != null ? `${formatAmount(Number(row.weightKg))} kg` : `${row.units ?? 0} u.`}</p>
+                  <p className="text-xs text-muted-foreground">{new Date(row.producedAt).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })}</p>
                 </div>
               </div>
             ))}
@@ -652,36 +605,34 @@ function Dashboard({ setView, role, currentUser }: { setView: (v: View) => void;
         <div className="rounded-[24px] border bg-white p-5 shadow-sm">
           <div className="mb-5 flex items-center justify-between">
             <div>
-              <h3 className="font-black">Próximo despacho</h3>
+              <h3 className="font-black">Último despacho</h3>
               <p className="text-sm text-muted-foreground">
-                Remito en preparación
+                {lastDispatchedRow ? "Último remito confirmado" : "Sin remitos registrados"}
               </p>
             </div>
-            <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-bold text-amber-700">
-              Borrador
-            </span>
+            {lastDispatchedRow && <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">Confirmado</span>}
           </div>
           <div className="rounded-2xl bg-[#fff5f8] p-5">
             <p className="text-xs font-bold uppercase tracking-wider text-[#b56a86]">
-              Sucursal Rojas
+              {lastDispatchedRow?.clientName ?? "Sin despachos"}
             </p>
-            <p className="mt-1 text-2xl font-black">Remito #553</p>
+            <p className="mt-1 text-2xl font-black">{lastDispatchedRow?.remittanceNumber ?? "Todavía no hay remitos"}</p>
             <div className="mt-5 grid grid-cols-2 gap-4 text-sm">
               <div>
                 <p className="text-muted-foreground">Escaneados</p>
-                <p className="font-black">18 productos</p>
+                <p className="font-black">{lastDispatchRows.length} {lastDispatchRows.length === 1 ? "producto" : "productos"}</p>
               </div>
               <div>
                 <p className="text-muted-foreground">Peso neto</p>
-                <p className="font-black">116,84 kg</p>
+                <p className="font-black">{formatAmount(lastDispatchKg)} kg</p>
               </div>
             </div>
           </div>
           <Button
-            onClick={() => setView("despacho")}
+            onClick={() => setView(lastDispatchedRow ? "remitos" : "despacho")}
             className="mt-4 w-full rounded-xl bg-[#3c2931] text-white"
           >
-            Continuar carga
+            {lastDispatchedRow ? "Ver remitos" : "Crear primer despacho"}
           </Button>
         </div>
       </section>
@@ -1179,12 +1130,6 @@ function Stock({ records }: { records: ProductionRecord[] }) {
     </section>
   );
 }
-
-const demoStockUnits: ProductionRecord[] = [
-  { uniqueCode: "004528", productCode: "230", productName: "Chocolate Münna B.G", container: "Balde retornable", weight: 7.155, units: null, responsible: "Lucas Martínez", time: "08:42", family: "Helado", price: 27000, presentation: "Balde grande" },
-  { uniqueCode: "004527", productCode: "214", productName: "Pistacho Vaq.", container: "Vasqueta", weight: 3.48, units: null, responsible: "Evelyn R.", time: "08:37", family: "Helado", price: 30000, presentation: "Vasqueta" },
-  { uniqueCode: "CAJ00084", productCode: "1002", productName: "Alfajor Helado Americana", container: "Caja", weight: null, units: 20, responsible: "Lucas Martínez", time: "08:31", family: "Postre congelado", price: 40000, presentation: "Caja x 20" },
-];
 
 function ProductionHistory({ rows }: { rows: ProductionHistoryRow[] }) {
   const [query, setQuery] = useState("");
@@ -3560,7 +3505,7 @@ export default function Home() {
           <div className={`mb-4 rounded-xl border px-4 py-2 text-sm font-bold ${databaseStatus === "live" ? "border-emerald-200 bg-emerald-50 text-emerald-800" : databaseStatus === "error" ? "border-red-200 bg-red-50 text-red-700" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
             {databaseStatus === "live" ? "Sistema real activo · producción, stock y despachos quedan guardados" : databaseStatus === "error" ? "Sin conexión con la base de datos · no cargues movimientos hasta reconectar" : "Conectando con la base de datos…"}
           </div>
-          {view === "inicio" && <Dashboard setView={setView} role={currentUser?.role ?? "administracion"} currentUser={currentUser} />}{" "}
+          {view === "inicio" && <Dashboard setView={setView} role={currentUser?.role ?? "administracion"} currentUser={currentUser} stock={productionRecords} history={productionHistory} />}{" "}
           {view === "produccion" && (
             <Production
               records={shiftRecords}
