@@ -1725,32 +1725,38 @@ function Clients({ clients, setClients, productFamilies }: { clients: Client[]; 
       {message && <p className="mb-4 rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800">{message}</p>}
       {saveError && !editing && <p className="mb-4 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{saveError}</p>}
       <div className="overflow-hidden rounded-2xl border">
-        <Table>
+        <Table className="min-w-[1080px] table-fixed">
           <TableHeader className="bg-[#fff4f8]">
             <TableRow>
-              <TableHead>Cliente</TableHead>
-              <TableHead>Tipo</TableHead>
-              <TableHead>Descuentos por línea</TableHead>
-              <TableHead>Envase</TableHead>
-              <TableHead>Peso facturable</TableHead>
-              <TableHead className="text-right">Acciones</TableHead>
+              <TableHead className="w-[19%] px-4">Cliente</TableHead>
+              <TableHead className="w-[12%]">Tipo</TableHead>
+              <TableHead className="w-[39%]">Descuentos por línea</TableHead>
+              <TableHead className="w-[12%]">Envase</TableHead>
+              <TableHead className="w-[10%]">Peso facturable</TableHead>
+              <TableHead className="w-[8%] px-4 text-right">Acciones</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {filtered.map((client) => (
               <TableRow key={client.id}>
-                <TableCell className="font-bold">{client.name}</TableCell>
-                <TableCell>{client.kind}</TableCell>
-                <TableCell className="max-w-xs text-xs leading-5">
-                  {productFamilies.map((family) => `${family.label} ${client.discounts[family.discountKey] ?? 0}%`).join(" · ")}
+                <TableCell className="whitespace-normal px-4 font-bold leading-5">{client.name}</TableCell>
+                <TableCell className="whitespace-normal leading-5">{client.kind}</TableCell>
+                <TableCell className="whitespace-normal py-3 align-top">
+                  <div className="flex flex-wrap gap-1.5">
+                    {productFamilies.map((family) => (
+                      <span key={family.discountKey} className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-[#efd8e1] bg-[#fff8fb] px-2 py-1 text-xs text-[#5b414b]">
+                        {family.label} <b>{client.discounts[family.discountKey] ?? 0}%</b>
+                      </span>
+                    ))}
+                  </div>
                 </TableCell>
                 <TableCell>
-                  <Badge variant="outline" className="rounded-full">
+                  <Badge variant="outline" className="whitespace-nowrap rounded-full">
                     {client.returnable ? "Retornable" : "No retornable"}
                   </Badge>
                 </TableCell>
-                <TableCell>{client.billingWeight}</TableCell>
-                <TableCell className="text-right">
+                <TableCell className="font-medium">{client.billingWeight}</TableCell>
+                <TableCell className="px-4 text-right">
                   <Button variant="outline" size="sm" className="rounded-lg" onClick={() => { setSaveError(""); setMessage(""); setEditing({ ...client, discounts: normalizeProductFamilyDiscounts(client.discounts, productFamilies) }); }}>
                     Editar
                   </Button>
