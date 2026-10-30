@@ -38,6 +38,13 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { productCatalog, type Product } from "@/lib/products";
 import {
+  PRODUCT_FAMILIES,
+  discountKeyForFamily,
+  findProductFamily,
+  normalizeProductFamilyDiscounts,
+  type ProductFamilyDiscounts,
+} from "@/lib/product-families";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -1228,12 +1235,8 @@ function Reports({ rows }: { rows: ProductionHistoryRow[] }) {
 }
 
 function discountFor(client: Client, family: string) {
-  if (family === "Helado") return client.discounts.helado;
-  if (family === "Postre congelado") return client.discounts.postres;
-  if (family === "Pastelería") return client.discounts.pasteleria;
-  if (family === "Insumo comprado") return client.discounts.insumos;
-  if (family === "Indumentaria") return client.discounts.indumentaria;
-  return 0;
+  const discountKey = discountKeyForFamily(family);
+  return discountKey ? client.discounts[discountKey] ?? 0 : 0;
 }
 
 function Dispatch({ clients, availableUnits, onConfirm }: { clients: Client[]; availableUnits: ProductionRecord[]; onConfirm: (codes: string[], client: Client) => Promise<void> }) {
@@ -1285,7 +1288,7 @@ function Dispatch({ clients, availableUnits, onConfirm }: { clients: Client[]; a
         <div className="mt-6 space-y-4">
           <div className="rounded-2xl bg-[#fff4f8] p-4">
             <p className="text-xs text-muted-foreground">Descuentos asignados</p>
-            <p className="mt-1 text-sm font-black">Helado {selectedClient?.discounts.helado ?? 0}% · Postres {selectedClient?.discounts.postres ?? 0}% · Pastelería {selectedClient?.discounts.pasteleria ?? 0}%</p>
+            <p className="mt-1 text-sm font-black">{PRODUCT_FAMILIES.map((family) => `${family.label} ${selectedClient?.discounts[family.discountKey] ?? 0}%`).join(" · ")}</p>
           </div>
           <div className="rounded-2xl bg-[#f2f7f3] p-4">
             <p className="text-xs text-muted-foreground">Modalidad de envase</p>
@@ -1342,6 +1345,7 @@ function Products() {
   const [products, setProducts] = useState<ProductProfile[]>(productCatalog);
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<ProductProfile | null>(null);
+  const [isCreating, setIsCreating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deletingCode, setDeletingCode] = useState("");
   const [saveError, setSaveError] = useState("");
@@ -1382,10 +1386,38 @@ function Products() {
     maximumFractionDigits: 0,
   });
   const needsPackageWeight = (product: ProductProfile) =>
-    ["postre congelado", "pastelería"].includes(product.family.trim().toLocaleLowerCase("es-AR"));
+    findProductFamily(product.family)?.requiresPackageWeight === true;
+  const familyCounts = useMemo(() => new Map(PRODUCT_FAMILIES.map((family) => [
+    family.value,
+    products.filter((product) => product.family === family.value).length,
+  ])), [products]);
+  const emptyProduct = (): ProductProfile => ({
+    code: "",
+    name: "",
+    family: PRODUCT_FAMILIES[0].value,
+    presentation: "",
+    container: "",
+    price: 0,
+    ingredients: "",
+    expiryDays: 365,
+    packageWeightKg: 0,
+    active: true,
+  });
 
   const saveProductProfile = async () => {
     if (!editing) return;
+    if (!editing.code.trim() || !editing.name.trim()) {
+      setSaveError("Completá el código y el nombre del producto.");
+      return;
+    }
+    if (!findProductFamily(editing.family)) {
+      setSaveError("Elegí una familia de productos de la lista.");
+      return;
+    }
+    if (isCreating && products.some((product) => product.code.trim().toLocaleLowerCase("es-AR") === editing.code.trim().toLocaleLowerCase("es-AR"))) {
+      setSaveError("Ya existe un producto con ese código.");
+      return;
+    }
     if (needsPackageWeight(editing) && Number(editing.packageWeightKg ?? 0) <= 0) {
       setSaveError("Indicá cuántos kg netos trae la presentación para poder calcular su costo.");
       return;
@@ -1397,7 +1429,7 @@ function Products() {
       const response = await fetch("/api/operations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "save-product-profile", product: editing }),
+        body: JSON.stringify({ action: "save-product-profile", product: editing, creating: isCreating }),
       });
       const data = await response.json() as { error?: string };
       if (!response.ok) throw new Error(data.error ?? "No se pudo guardar el producto.");
@@ -1406,9 +1438,12 @@ function Products() {
       runtimeProductCatalog = runtimeProductCatalog.some((item) => item.code === editing.code)
         ? runtimeProductCatalog.map((item) => item.code === editing.code ? savedProduct : item)
         : [...runtimeProductCatalog, savedProduct];
-      setProducts((current) => current.map((item) => item.code === editing.code ? savedProduct : item));
+      setProducts((current) => current.some((item) => item.code === editing.code)
+        ? current.map((item) => item.code === editing.code ? savedProduct : item)
+        : [...current, savedProduct].sort((a, b) => a.name.localeCompare(b.name, "es")));
       setEditing(null);
-      setMessage("Producto actualizado correctamente.");
+      setIsCreating(false);
+      setMessage(isCreating ? "Producto creado correctamente." : "Producto actualizado correctamente.");
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "No se pudo guardar el producto.");
     } finally {
@@ -1447,13 +1482,25 @@ function Products() {
             {products.length} productos activos · podés editar o eliminar cualquiera
           </p>
         </div>
-        <div className="relative w-full md:w-96">
-          <Search className="absolute left-3 top-3 size-4 text-muted-foreground" />
-          <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por nombre, código o familia" className="h-10 rounded-xl pl-9" />
+        <div className="flex w-full flex-col gap-2 sm:flex-row md:w-auto">
+          <div className="relative w-full md:w-96">
+            <Search className="absolute left-3 top-3 size-4 text-muted-foreground" />
+            <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por nombre, código o familia" className="h-10 rounded-xl pl-9" />
+          </div>
+          <Button onClick={() => { setSaveError(""); setMessage(""); setIsCreating(true); setEditing(emptyProduct()); }} className="rounded-xl bg-[#ed94b5] font-black text-[#3c2931] hover:bg-[#f2a8c3]">
+            <Plus /> Nuevo producto
+          </Button>
         </div>
       </div>
       {message && <p className="mb-4 rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800">{message}</p>}
       {saveError && !editing && <p className="mb-4 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{saveError}</p>}
+      <div className="mb-5 rounded-2xl border bg-[#fff8fb] p-4">
+        <p className="font-black">Familias de productos</p>
+        <p className="mb-3 text-xs text-muted-foreground">Esta lista se usa al crear productos y para los descuentos de cada cliente.</p>
+        <div className="flex flex-wrap gap-2">
+          {PRODUCT_FAMILIES.map((family) => <Badge key={family.value} variant="outline" className="rounded-full bg-white px-3 py-1.5">{family.label} · {familyCounts.get(family.value) ?? 0}</Badge>)}
+        </div>
+      </div>
       <div className="max-h-[650px] overflow-auto rounded-2xl border">
         <Table>
           <TableHeader className="sticky top-0 z-10 bg-[#fff4f8]">
@@ -1471,7 +1518,7 @@ function Products() {
                 <TableCell className="text-right">{Number(product.packageWeightKg ?? 0) > 0 ? `${Number(product.packageWeightKg).toLocaleString("es-AR", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg` : "—"}</TableCell>
                 <TableCell className="text-right font-semibold">{currency.format(product.price)}</TableCell>
                 <TableCell className="text-right"><div className="flex justify-end gap-2">
-                  <Button variant="outline" size="sm" className="rounded-lg" onClick={() => { setSaveError(""); setMessage(""); setEditing({ ...product }); }}>Editar</Button>
+                  <Button variant="outline" size="sm" className="rounded-lg" onClick={() => { setSaveError(""); setMessage(""); setIsCreating(false); setEditing({ ...product }); }}>Editar</Button>
                   <AlertDialog>
                     <AlertDialogTrigger asChild><Button variant="outline" size="sm" className="rounded-lg border-red-200 text-red-700 hover:bg-red-50 hover:text-red-800">Eliminar</Button></AlertDialogTrigger>
                     <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>¿Eliminar {product.name}?</AlertDialogTitle><AlertDialogDescription>Se quitará de Productos, Producción y Fórmulas. El historial producido y los remitos anteriores se conservarán.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancelar</AlertDialogCancel><AlertDialogAction disabled={deletingCode === product.code} onClick={() => archiveProduct(product)} className="bg-red-600 text-white hover:bg-red-700">{deletingCode === product.code ? "Eliminando…" : "Sí, eliminar"}</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
@@ -1483,15 +1530,15 @@ function Products() {
         </Table>
       </div>
       <p className="mt-3 text-xs text-muted-foreground">Eliminar archiva el producto: deja de aparecer para movimientos nuevos, pero mantiene intacta la trazabilidad anterior.</p>
-      <Dialog open={Boolean(editing)} onOpenChange={(open) => { if (!open) { setEditing(null); setSaveError(""); } }}>
+      <Dialog open={Boolean(editing)} onOpenChange={(open) => { if (!open) { setEditing(null); setIsCreating(false); setSaveError(""); } }}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
-          <DialogHeader><DialogTitle>Editar producto</DialogTitle><DialogDescription>Configurá la presentación y su peso para que el sistema pueda calcular el costo real.</DialogDescription></DialogHeader>
+          <DialogHeader><DialogTitle>{isCreating ? "Nuevo producto" : "Editar producto"}</DialogTitle><DialogDescription>Configurá la familia, la presentación y su peso para que el sistema pueda calcular el costo real.</DialogDescription></DialogHeader>
           {editing && (
             <div className="grid gap-4 py-2 sm:grid-cols-2">
-              <label className="space-y-2 text-sm font-bold">Código<Input value={editing.code} readOnly className="font-mono font-normal" /></label>
+              <label className="space-y-2 text-sm font-bold">Código<Input value={editing.code} readOnly={!isCreating} onChange={(event) => setEditing({ ...editing, code: event.target.value })} className="font-mono font-normal" /></label>
               <label className="space-y-2 text-sm font-bold">Precio base<Input type="number" value={editing.price} onChange={(event) => setEditing({ ...editing, price: Number(event.target.value) })} className="font-normal" /></label>
               <label className="space-y-2 text-sm font-bold sm:col-span-2">Nombre para sistema y etiqueta<Input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} className="font-normal" /></label>
-              <label className="space-y-2 text-sm font-bold">Familia<Input value={editing.family} onChange={(event) => setEditing({ ...editing, family: event.target.value })} className="font-normal" /></label>
+              <label className="space-y-2 text-sm font-bold">Familia<select value={editing.family} onChange={(event) => setEditing({ ...editing, family: event.target.value })} className="h-10 w-full rounded-md border bg-white px-3 font-normal">{PRODUCT_FAMILIES.map((family) => <option key={family.value} value={family.value}>{family.label}</option>)}</select></label>
               <label className="space-y-2 text-sm font-bold">Presentación<Input value={editing.presentation} onChange={(event) => setEditing({ ...editing, presentation: event.target.value })} className="font-normal" /></label>
               <label className="space-y-2 text-sm font-bold">Envase<Input value={editing.container} onChange={(event) => setEditing({ ...editing, container: event.target.value })} className="font-normal" /></label>
               <label className="space-y-2 text-sm font-bold">Vencimiento (días)<Input type="number" value={editing.expiryDays} onChange={(event) => setEditing({ ...editing, expiryDays: Number(event.target.value) })} className="font-normal" /></label>
@@ -1500,7 +1547,7 @@ function Products() {
             </div>
           )}
           {saveError && editing && <p className="text-sm font-bold text-red-600">{saveError}</p>}
-          <DialogFooter><Button variant="outline" onClick={() => setEditing(null)}>Cancelar</Button><Button disabled={saving} className="bg-[#ed94b5] font-black text-[#3c2931] hover:bg-[#f2a8c3]" onClick={saveProductProfile}>{saving ? "Guardando…" : "Guardar cambios"}</Button></DialogFooter>
+          <DialogFooter><Button variant="outline" onClick={() => { setEditing(null); setIsCreating(false); }}>Cancelar</Button><Button disabled={saving} className="bg-[#ed94b5] font-black text-[#3c2931] hover:bg-[#f2a8c3]" onClick={saveProductProfile}>{saving ? "Guardando…" : isCreating ? "Crear producto" : "Guardar cambios"}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
     </section>
@@ -1510,40 +1557,61 @@ type Client = {
   id: number;
   name: string;
   kind: string;
-  discounts: {
-    helado: number;
-    postres: number;
-    pasteleria: number;
-    insumos: number;
-    indumentaria: number;
-  };
+  discounts: ProductFamilyDiscounts;
   returnable: boolean;
   billingWeight: "Neto" | "Bruto";
   active: boolean;
 };
 
 const initialClients: Client[] = [
-  { id: 1, name: "Franquicia Rojas", kind: "Franquicia", discounts: { helado: 50, postres: 35, pasteleria: 30, insumos: 10, indumentaria: 0 }, returnable: true, billingWeight: "Neto", active: true },
-  { id: 2, name: "Sucursal Av. de Mayo", kind: "Sucursal propia", discounts: { helado: 50, postres: 35, pasteleria: 30, insumos: 10, indumentaria: 0 }, returnable: true, billingWeight: "Neto", active: true },
-  { id: 3, name: "Sucursal Centenario", kind: "Sucursal propia", discounts: { helado: 50, postres: 35, pasteleria: 30, insumos: 10, indumentaria: 0 }, returnable: true, billingWeight: "Neto", active: true },
-  { id: 4, name: "Evento ocasional", kind: "Evento", discounts: { helado: 0, postres: 0, pasteleria: 0, insumos: 0, indumentaria: 0 }, returnable: false, billingWeight: "Bruto", active: true },
+  { id: 1, name: "Franquicia Rojas", kind: "Franquicia", discounts: normalizeProductFamilyDiscounts({ helado: 50, postres: 35, pasteleria: 30, insumos: 10, indumentaria: 0 }), returnable: true, billingWeight: "Neto", active: true },
+  { id: 2, name: "Sucursal Av. de Mayo", kind: "Sucursal propia", discounts: normalizeProductFamilyDiscounts({ helado: 50, postres: 35, pasteleria: 30, insumos: 10, indumentaria: 0 }), returnable: true, billingWeight: "Neto", active: true },
+  { id: 3, name: "Sucursal Centenario", kind: "Sucursal propia", discounts: normalizeProductFamilyDiscounts({ helado: 50, postres: 35, pasteleria: 30, insumos: 10, indumentaria: 0 }), returnable: true, billingWeight: "Neto", active: true },
+  { id: 4, name: "Evento ocasional", kind: "Evento", discounts: normalizeProductFamilyDiscounts({}), returnable: false, billingWeight: "Bruto", active: true },
 ];
 
 function Clients({ clients, setClients }: { clients: Client[]; setClients: StateDispatch<SetStateAction<Client[]>> }) {
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Client | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [message, setMessage] = useState("");
   const filtered = clients.filter((client) =>
     `${client.name} ${client.kind}`.toLowerCase().includes(query.toLowerCase()),
   );
   const emptyClient = (): Client => ({
-    id: Math.max(0, ...clients.map((client) => client.id)) + 1,
+    id: 0,
     name: "",
     kind: "Franquicia",
-    discounts: { helado: 0, postres: 0, pasteleria: 0, insumos: 0, indumentaria: 0 },
+    discounts: normalizeProductFamilyDiscounts({}),
     returnable: true,
     billingWeight: "Neto",
     active: true,
   });
+  const saveClient = async () => {
+    if (!editing?.name.trim()) return;
+    setSaving(true);
+    setSaveError("");
+    setMessage("");
+    try {
+      const response = await fetch("/api/operations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "save-client", client: editing }),
+      });
+      const data = await response.json() as { client?: Client; error?: string };
+      if (!response.ok || !data.client) throw new Error(data.error ?? "No se pudo guardar el cliente.");
+      setClients((current) => current.some((client) => client.id === data.client?.id)
+        ? current.map((client) => client.id === data.client?.id ? data.client as Client : client)
+        : [...current, data.client as Client].sort((a, b) => a.name.localeCompare(b.name, "es")));
+      setEditing(null);
+      setMessage("Cliente guardado correctamente.");
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "No se pudo guardar el cliente.");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <section className="rounded-[26px] border bg-white p-5 shadow-sm">
@@ -1559,11 +1627,13 @@ function Clients({ clients, setClients }: { clients: Client[]; setClients: State
             <Search className="absolute left-3 top-3 size-4 text-muted-foreground" />
             <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar cliente" className="h-10 rounded-xl pl-9" />
           </div>
-          <Button onClick={() => setEditing(emptyClient())} className="rounded-xl bg-[#ed94b5] font-black text-[#3c2931] hover:bg-[#f2a8c3]">
+          <Button onClick={() => { setSaveError(""); setMessage(""); setEditing(emptyClient()); }} className="rounded-xl bg-[#ed94b5] font-black text-[#3c2931] hover:bg-[#f2a8c3]">
             <Plus /> Nuevo cliente
           </Button>
         </div>
       </div>
+      {message && <p className="mb-4 rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800">{message}</p>}
+      {saveError && !editing && <p className="mb-4 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{saveError}</p>}
       <div className="overflow-hidden rounded-2xl border">
         <Table>
           <TableHeader className="bg-[#fff4f8]">
@@ -1582,7 +1652,7 @@ function Clients({ clients, setClients }: { clients: Client[]; setClients: State
                 <TableCell className="font-bold">{client.name}</TableCell>
                 <TableCell>{client.kind}</TableCell>
                 <TableCell className="max-w-xs text-xs leading-5">
-                  Helado {client.discounts.helado}% · Postres {client.discounts.postres}% · Pastelería {client.discounts.pasteleria}% · Insumos {client.discounts.insumos}%
+                  {PRODUCT_FAMILIES.map((family) => `${family.label} ${client.discounts[family.discountKey] ?? 0}%`).join(" · ")}
                 </TableCell>
                 <TableCell>
                   <Badge variant="outline" className="rounded-full">
@@ -1591,7 +1661,7 @@ function Clients({ clients, setClients }: { clients: Client[]; setClients: State
                 </TableCell>
                 <TableCell>{client.billingWeight}</TableCell>
                 <TableCell className="text-right">
-                  <Button variant="outline" size="sm" className="rounded-lg" onClick={() => setEditing({ ...client })}>
+                  <Button variant="outline" size="sm" className="rounded-lg" onClick={() => { setSaveError(""); setMessage(""); setEditing({ ...client, discounts: normalizeProductFamilyDiscounts(client.discounts) }); }}>
                     Editar
                   </Button>
                 </TableCell>
@@ -1626,23 +1696,17 @@ function Clients({ clients, setClients }: { clients: Client[]; setClients: State
               <div className="rounded-xl border bg-[#fff8fb] p-4 sm:col-span-2">
                 <p className="mb-3 text-sm font-black">Descuento por línea de producto</p>
                 <div className="grid gap-3 sm:grid-cols-2">
-                  {([
-                    ["helado", "Helados"],
-                    ["postres", "Postres congelados"],
-                    ["pasteleria", "Pastelería"],
-                    ["insumos", "Insumos comprados"],
-                    ["indumentaria", "Indumentaria"],
-                  ] as const).map(([key, label]) => (
-                    <label key={key} className="space-y-1 text-sm font-bold">
-                      {label} (%)
+                  {PRODUCT_FAMILIES.map((family) => (
+                    <label key={family.discountKey} className="space-y-1 text-sm font-bold">
+                      {family.label} (%)
                       <Input
                         type="number"
                         min="0"
                         max="100"
-                        value={editing.discounts[key]}
+                        value={editing.discounts[family.discountKey]}
                         onChange={(event) => setEditing({
                           ...editing,
-                          discounts: { ...editing.discounts, [key]: Number(event.target.value) },
+                          discounts: { ...editing.discounts, [family.discountKey]: Number(event.target.value) },
                         })}
                         className="font-normal"
                       />
@@ -1669,20 +1733,15 @@ function Clients({ clients, setClients }: { clients: Client[]; setClients: State
               </label>
             </div>
           )}
+          {saveError && editing && <p className="text-sm font-bold text-red-600">{saveError}</p>}
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditing(null)}>Cancelar</Button>
             <Button
-              disabled={!editing?.name.trim()}
+              disabled={saving || !editing?.name.trim()}
               className="bg-[#ed94b5] font-black text-[#3c2931] hover:bg-[#f2a8c3]"
-              onClick={() => {
-                if (!editing) return;
-                setClients((current) => current.some((client) => client.id === editing.id)
-                  ? current.map((client) => client.id === editing.id ? editing : client)
-                  : [...current, editing]);
-                setEditing(null);
-              }}
+              onClick={saveClient}
             >
-              Guardar cliente
+              {saving ? "Guardando…" : "Guardar cliente"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -3346,7 +3405,7 @@ export default function Home() {
     let active = true;
     fetch("/api/operations")
       .then(async (response) => {
-        const data = await response.json() as { stock?: Array<Record<string, unknown>>; productionHistory?: ProductionHistoryRow[]; staff?: StaffMember[]; currentUser?: StaffMember; nextUniqueCode?: string; productProfiles?: ProductProfile[]; error?: string };
+        const data = await response.json() as { stock?: Array<Record<string, unknown>>; productionHistory?: ProductionHistoryRow[]; clients?: Client[]; staff?: StaffMember[]; currentUser?: StaffMember; nextUniqueCode?: string; productProfiles?: ProductProfile[]; error?: string };
         if (!response.ok) throw new Error(data.error ?? "No se pudo conectar con la base de datos.");
         if (!active) return;
         const savedProfiles = data.productProfiles ?? [];
@@ -3369,6 +3428,7 @@ export default function Home() {
         })));
         setNextUniqueCode(data.nextUniqueCode ?? "004530");
         setProductionHistory(data.productionHistory ?? []);
+        if (data.clients?.length) setClients(data.clients.map((client) => ({ ...client, discounts: normalizeProductFamilyDiscounts(client.discounts) })));
         setStaff(data.staff ?? []);
         setCurrentUser(data.currentUser ?? null);
         setDatabaseStatus("live");

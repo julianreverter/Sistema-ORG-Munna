@@ -2,6 +2,11 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getChatGPTUser } from "@/app/chatgpt-auth";
 
 import { PRODUCTION_TEAM, PRODUCTION_LEAD_EMAIL } from "@/lib/production-team";
+import {
+  discountKeyForFamily,
+  findProductFamily,
+  normalizeProductFamilyDiscounts,
+} from "@/lib/product-families";
 
 type Row = Record<string, any>;
 
@@ -211,11 +216,23 @@ function dispatchRow(row: Row) {
   };
 }
 
+function clientRow(row: Row) {
+  return {
+    id: n(row.id),
+    name: String(row.name ?? ""),
+    kind: String(row.kind ?? "Cliente"),
+    discounts: normalizeProductFamilyDiscounts(row.discounts),
+    returnable: row.returnable !== false,
+    billingWeight: String(row.billing_weight ?? "Neto") === "Bruto" ? "Bruto" : "Neto",
+    active: row.active !== false,
+  };
+}
+
 export async function GET() {
   try {
     const { profile, supabase } = await context();
     const productionSelect = "*, products(code,name,family,presentation,container), responsible:profiles!production_units_responsible_id_fkey(display_name), dispatch_items(dispatches(remittance_number,clients(name)))";
-    const [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, recipesResult, productsResult] = await Promise.all([
+    const [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, recipesResult, productsResult, clientsResult] = await Promise.all([
       supabase.from("production_units").select(productionSelect).order("id", { ascending: false }).limit(5000),
       supabase.from("dispatches").select("*, clients(name), dispatch_items(*, production_units(unique_code,weight_kg,units,products(code,name,family,presentation,container)))").order("id", { ascending: false }).limit(5000),
       supabase.from("customer_payments").select("*, clients(name)").order("id", { ascending: false }).limit(500),
@@ -229,8 +246,9 @@ export async function GET() {
       supabase.from("supplier_payments").select("*, suppliers(name)").order("id", { ascending: false }).limit(5000),
       supabase.from("recipes").select("*, products(code,name,family,presentation,container,unit_type,tare_kg), recipe_items(id,purchased_product_id,quantity_kg,purchased_products(master_name,last_final_cost_per_unit,cost_unit))").eq("active", true).order("name"),
       supabase.from("products").select("code,name,family,presentation,container,unit_type,tare_kg,base_price,ingredients,expiry_days,active").order("name"),
+      supabase.from("clients").select("id,name,kind,discounts,returnable,billing_weight,active").eq("active", true).order("name"),
     ]);
-    const firstError = [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, recipesResult, productsResult].find((r) => r.error)?.error;
+    const firstError = [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, recipesResult, productsResult, clientsResult].find((r) => r.error)?.error;
     if (firstError) throw firstError;
 
     const allUnits = (unitsResult.data ?? []).map(productionRow);
@@ -427,6 +445,7 @@ export async function GET() {
       suppliers: canSeeFinancials ? supplierRows : [],
       formulas: canSeeCosts ? formulaRows : [],
       formulaReferencesAvailable: formulaLinks.available,
+      clients: (clientsResult.data ?? []).map(clientRow),
       productProfiles: (productsResult.data ?? []).map((r: Row) => ({
         code: String(r.code),
         name: String(r.name),
@@ -456,7 +475,7 @@ export async function POST(request: Request) {
   try {
     const { user, profile, supabase } = await context();
     const payload = await request.json() as Row;
-    const financial = ["register-credit-note", "register-purchase", "update-purchase", "delete-purchase", "mark-purchase-paid", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "update-supplier", "archive-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
+    const financial = ["register-credit-note", "register-purchase", "update-purchase", "delete-purchase", "mark-purchase-paid", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "update-supplier", "archive-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "save-client", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
     if (financial.includes(String(payload.action)) && profile.role !== "administracion") return Response.json({ error: "No tenés permiso para esta operación." }, { status: 403 });
 
     if (payload.action === "register-production") {
@@ -504,13 +523,34 @@ export async function POST(request: Request) {
       return Response.json({ unit: saved.data, costPerKgSnapshot }, { status: 201 });
     }
 
+    if (payload.action === "save-client") {
+      const client = payload.client as Row;
+      const clientId = n(client?.id);
+      const name = String(client?.name ?? "").trim();
+      if (!name) return Response.json({ error: "Ingresá el nombre o razón social." }, { status: 400 });
+      const values = {
+        name,
+        kind: String(client.kind ?? "Cliente").trim() || "Cliente",
+        discounts: normalizeProductFamilyDiscounts(client.discounts),
+        returnable: client.returnable !== false,
+        billing_weight: String(client.billingWeight ?? "Neto") === "Bruto" ? "Bruto" : "Neto",
+        active: client.active !== false,
+      };
+      const saved = clientId > 0
+        ? await supabase.from("clients").update(values).eq("id", clientId).select().single()
+        : await supabase.from("clients").insert(values).select().single();
+      if (saved.error?.code === "23505") return Response.json({ error: "Ya existe un cliente con ese nombre." }, { status: 409 });
+      if (saved.error) throw saved.error;
+      return Response.json({ client: clientRow(saved.data) }, { status: clientId > 0 ? 200 : 201 });
+    }
+
     if (payload.action === "create-dispatch") {
       const codes = Array.isArray(payload.codes) ? payload.codes.map(String) : [];
       const incomingClient = payload.client as Row;
       if (!codes.length || !incomingClient?.name) return Response.json({ error: "Faltan cliente o productos." }, { status: 400 });
       let { data: client } = await supabase.from("clients").select("*").eq("name", String(incomingClient.name)).maybeSingle();
       if (!client) {
-        const created = await supabase.from("clients").insert({ name: String(incomingClient.name), kind: String(incomingClient.type ?? "Cliente"), discounts: incomingClient.discounts ?? {}, returnable: incomingClient.returnable !== false, billing_weight: String(incomingClient.billingWeight ?? "Neto") }).select().single();
+        const created = await supabase.from("clients").insert({ name: String(incomingClient.name), kind: String(incomingClient.kind ?? "Cliente"), discounts: normalizeProductFamilyDiscounts(incomingClient.discounts), returnable: incomingClient.returnable !== false, billing_weight: String(incomingClient.billingWeight ?? "Neto") }).select().single();
         if (created.error) throw created.error;
         client = created.data;
       }
@@ -518,10 +558,11 @@ export async function POST(request: Request) {
       if (unitsResult.error) throw unitsResult.error;
       const units = unitsResult.data ?? [];
       if (units.length !== codes.length) return Response.json({ error: "Uno o más códigos ya no están disponibles en stock." }, { status: 409 });
-      const discounts = incomingClient.discounts ?? client.discounts ?? {};
+      const discounts = normalizeProductFamilyDiscounts(incomingClient.discounts ?? client.discounts);
       const lines = units.map((unit: Row) => {
-        const family = String(one(unit.products)?.family ?? "helado").toLowerCase();
-        const discount = n(discounts[family] ?? discounts.helado);
+        const family = String(one(unit.products)?.family ?? "Helado");
+        const discountKey = discountKeyForFamily(family) ?? "helado";
+        const discount = n(discounts[discountKey]);
         const quantity = n(unit.weight_kg ?? unit.units);
         const subtotal = quantity * n(unit.base_price_snapshot);
         return { unit, discount, subtotal, total: subtotal * (1 - discount / 100) };
@@ -632,11 +673,17 @@ export async function POST(request: Request) {
       const product = payload.product as Row;
       const code = String(product?.code ?? "").trim();
       const name = String(product?.name ?? "").trim();
-      const family = String(product?.family ?? "").trim();
+      const requestedFamily = String(product?.family ?? "").trim();
+      const familyDefinition = findProductFamily(requestedFamily);
       const packageWeightKg = n(product?.packageWeightKg);
-      const needsWeight = ["postre congelado", "pastelería"].includes(family.toLocaleLowerCase("es-AR"));
-      if (!code || !name || !family) return Response.json({ error: "Completá código, nombre y familia." }, { status: 400 });
-      if (needsWeight && packageWeightKg <= 0) return Response.json({ error: "Indicá cuántos kg netos trae la presentación para poder costearla." }, { status: 400 });
+      if (!code || !name || !familyDefinition) return Response.json({ error: "Completá código, nombre y familia." }, { status: 400 });
+      const family = familyDefinition.value;
+      if (familyDefinition.requiresPackageWeight && packageWeightKg <= 0) return Response.json({ error: "Indicá cuántos kg netos trae la presentación para poder costearla." }, { status: 400 });
+      if (payload.creating === true) {
+        const existing = await supabase.from("products").select("id").eq("code", code).maybeSingle();
+        if (existing.error) throw existing.error;
+        if (existing.data) return Response.json({ error: "Ya existe un producto con ese código." }, { status: 409 });
+      }
 
       const saved = await supabase.from("products").upsert({
         code,
@@ -644,7 +691,7 @@ export async function POST(request: Request) {
         family,
         presentation: String(product.presentation ?? ""),
         container: String(product.container ?? ""),
-        unit_type: family === "Helado" ? "kg" : "unidad",
+        unit_type: familyDefinition.unitType,
         tare_kg: Math.max(0, packageWeightKg),
         base_price: Math.max(0, n(product.price)),
         ingredients: String(product.ingredients ?? ""),
