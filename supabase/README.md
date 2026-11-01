@@ -1,5 +1,13 @@
 # Supabase — Sistema ORG Münna
 
+## Bajas de stock con historial
+
+La migración `20261101233725_stock_removal_audit.sql` agrega la auditoría de bajas sobre la producción existente. Aplicarla antes de desplegar la pantalla de Eliminados. No elimina registros ni modifica el stock existente.
+
+Desde Stock de fábrica se elige una unidad por código y se registra el motivo. Otro exige un comentario; los demás motivos admiten comentarios opcionales (hasta 2000 caracteres). La base registra la fecha y el usuario autenticado, conserva la producción original y bloquea la modificación posterior de la baja. Las unidades despachadas o con un despacho en curso no pueden eliminarse. Los roles operativos conservan los mismos permisos de actualización de stock, sin acceso a costos.
+
+Verificación: `npm test` cubre el formulario de datos y la API. `node tests/stock-removal-migration.mjs` prueba el SQL en PostgreSQL en memoria con `@electric-sql/pglite` instalado; alternativamente, `PGLITE_MODULE` puede indicar la ruta absoluta de su `dist/index.js`. La prueba no se conecta a la base real.
+
 ## Primera instalación
 
 1. Abrir el proyecto `Sistema ORG Munna` en Supabase.

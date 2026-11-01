@@ -1,5 +1,7 @@
 "use client";
 
+import { STOCK_REMOVAL_REASONS, stockRemovalError, stockStatusLabel } from "@/lib/stock-removal";
+
 import { useEffect, useMemo, useRef, useState, type Dispatch as StateDispatch, type SetStateAction } from "react";
 import Image from "next/image";
 import { accountDay, accountDate, accountDefaultRange, accountMoney, summarizeAccount, customerStatementHtml } from "@/lib/account-summary";
@@ -102,6 +104,7 @@ type View =
   | "inicio"
   | "produccion"
   | "stock"
+  | "eliminados"
   | "historico-produccion"
   | "despacho"
   | "remitos"
@@ -127,7 +130,7 @@ type ProductionRecord = {
   price: number;
   presentation: string;
 };
-type ProductionHistoryRow = { id: number; uniqueCode: string; productCode: string; productName: string; presentation: string; container: string; weightKg: number | null; units: number | null; responsible: string; status: string; costPerKgSnapshot?: number | null; producedAt: string; dispatchedAt: string | null; remittanceNumber: string | null; clientName: string | null };
+type ProductionHistoryRow = { deletedAt?: string | null; deletedByName?: string | null; deletionReason?: string | null; deletionComment?: string | null; id: number; uniqueCode: string; productCode: string; productName: string; presentation: string; container: string; weightKg: number | null; units: number | null; responsible: string; status: string; costPerKgSnapshot?: number | null; producedAt: string; dispatchedAt: string | null; remittanceNumber: string | null; clientName: string | null };
 type StaffMember = { id: number; email: string; displayName: string; role: "produccion" | "encargado" | "administracion"; active: boolean };
 
 const CODE128_PATTERNS = [
@@ -294,6 +297,7 @@ const menu = [
   ["inicio", "Inicio", LayoutDashboard],
   ["produccion", "Producción", IceCreamBowl],
   ["stock", "Stock de fábrica", Boxes],
+  ["eliminados", "Eliminados", Trash2],
   ["historico-produccion", "Histórico producido", ClipboardList],
   ["despacho", "Nuevo despacho", Truck],
   ["remitos", "Remitos", FileText],
@@ -337,7 +341,7 @@ function AppSidebar({
   role: StaffMember["role"];
   currentUser: StaffMember | null;
 }) {
-  const operationItems = role === "produccion" ? menu.filter(([id]) => ["inicio", "produccion", "despacho"].includes(id)) : menu;
+  const operationItems = role === "produccion" ? menu.filter(([id]) => ["inicio", "produccion", "stock", "eliminados", "despacho"].includes(id)) : menu;
   const administrationItems = role === "administracion" ? adminMenu : [];
   const group = (
     items: readonly (readonly [string, string, typeof LayoutDashboard])[],
@@ -1005,7 +1009,19 @@ function Production({
   );
 }
 
-function Stock({ records }: { records: ProductionRecord[] }) {
+function Stock({ records, onRemove }: { records: ProductionRecord[]; onRemove: (code: string, reason: string, comment: string) => Promise<void> }) {
+  const [selectedCode, setSelectedCode] = useState("");
+  const [candidateCodes, setCandidateCodes] = useState<string[]>([]);
+  const [reason, setReason] = useState("");
+  const [comment, setComment] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const selected = records.find((record) => record.uniqueCode === selectedCode);
+  const openRemoval = (codes: string[]) => {
+    setCandidateCodes(codes); setSelectedCode(codes.length === 1 ? codes[0] : "");
+    setReason(""); setComment(""); setError(""); setNotice("");
+  };
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLowerCase();
   const compactQuery = normalizedQuery.replace(/[^a-z0-9]/g, "");
@@ -1083,7 +1099,8 @@ function Stock({ records }: { records: ProductionRecord[] }) {
           />
         </div>
       </div>
-      <Table>
+      {notice && <p role="status" className="mb-4 rounded-xl bg-emerald-50 p-3 text-sm text-emerald-800">{notice}</p>}
+      <div className="overflow-x-auto"><Table>
         <TableHeader>
           <TableRow>
             <TableHead>Código</TableHead>
@@ -1092,11 +1109,11 @@ function Stock({ records }: { records: ProductionRecord[] }) {
             <TableHead>Presentación</TableHead>
             <TableHead className="text-right">Unidades</TableHead>
             <TableHead className="text-right">Kg netos</TableHead>
-            <TableHead>Estado</TableHead>
+            <TableHead>Estado</TableHead><TableHead>Acción</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {rows.length === 0 && <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">No hay stock disponible para esta búsqueda.</TableCell></TableRow>}
+          {rows.length === 0 && <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">No hay stock disponible para esta búsqueda.</TableCell></TableRow>}
           {rows.map((row) => (
             <TableRow key={row.key}>
               <TableCell className="font-mono text-xs">
@@ -1123,12 +1140,63 @@ function Stock({ records }: { records: ProductionRecord[] }) {
                   {row.status}
                 </Badge>
               </TableCell>
+              <TableCell><Button variant="outline" size="sm" className="text-red-700" onClick={() => openRemoval(row.uniqueCodes)}><Trash2 className="size-4" /> Eliminar</Button></TableCell>
             </TableRow>
           ))}
         </TableBody>
-      </Table>
+      </Table></div>
+      <Dialog open={candidateCodes.length > 0} onOpenChange={(open) => { if (!open && !saving) setCandidateCodes([]); }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader><DialogTitle>Eliminar unidad del stock</DialogTitle><DialogDescription>La unidad saldrá del stock de fábrica y quedará registrada en Eliminados. Se conservará su producción original.</DialogDescription></DialogHeader>
+          <div className="space-y-4">
+            <label className="block text-sm font-bold">Unidad / código de barras
+              <select className="mt-1 h-11 w-full rounded-md border bg-white px-3" value={selectedCode} disabled={saving} onChange={(event) => setSelectedCode(event.target.value)}>
+                <option value="">Elegí la unidad a eliminar</option>
+                {candidateCodes.map((code) => { const record = records.find((item) => item.uniqueCode === code); return <option key={code} value={code}>#{code} · {record?.weight != null ? record.weight.toLocaleString("es-AR", { minimumFractionDigits: 3 }) + " kg" : (record?.units ?? 0) + " u."}</option>; })}
+              </select>
+            </label>
+            {selected && <div className="rounded-xl bg-[#fff5f8] p-3 text-sm"><b>{selected.productName}</b><p>{selected.presentation} · Elaboró: {selected.responsible}</p></div>}
+            <label className="block text-sm font-bold">Motivo
+              <select className="mt-1 h-11 w-full rounded-md border bg-white px-3" value={reason} disabled={saving} onChange={(event) => setReason(event.target.value)}><option value="">Elegí un motivo</option>{STOCK_REMOVAL_REASONS.map((item) => <option key={item}>{item}</option>)}</select>
+            </label>
+            <label className="block text-sm font-bold">Comentario {reason === "Otro" ? "(obligatorio)" : "(opcional)"}
+              <Textarea className="mt-1" value={comment} onChange={(event) => setComment(event.target.value)} maxLength={2000} required={reason === "Otro"} disabled={saving} placeholder="Explicá qué pasó con esta unidad" />
+            </label>
+            {reason === "Mal formulado (a desperdicio)" && <p className="text-sm text-amber-800">Esta baja quedará identificada como desperdicio.</p>}
+            {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
+          </div>
+          <DialogFooter><Button variant="outline" disabled={saving} onClick={() => setCandidateCodes([])}>Cancelar</Button><Button className="bg-red-600 text-white hover:bg-red-700" disabled={saving || !selected || !!stockRemovalError(reason, comment)} onClick={async () => {
+            if (saving || !selected) return;
+            const validation = stockRemovalError(reason, comment); if (validation) { setError(validation); return; }
+            setSaving(true); setError("");
+            try { await onRemove(selectedCode, reason, comment.trim()); setCandidateCodes([]); setNotice("Unidad #" + selectedCode + " eliminada. Podés consultar el detalle en Eliminados."); }
+            catch (error) { setError(error instanceof Error ? error.message : "No se pudo eliminar la unidad."); }
+            finally { setSaving(false); }
+          }}>{saving ? "Eliminando…" : "Confirmar eliminación"}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   );
+}
+
+function DeletedStock({ rows }: { rows: ProductionHistoryRow[] }) {
+  const [query, setQuery] = useState("");
+  const [reason, setReason] = useState("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const deleted = rows.filter((row) => row.status === "baja").filter((row) => {
+    const day = row.deletedAt ? new Date(row.deletedAt).toLocaleDateString("sv-SE", { timeZone: "America/Argentina/Buenos_Aires" }) : "";
+    const text = [row.uniqueCode, row.productCode, row.productName, row.responsible, row.deletedByName, row.deletionReason, row.deletionComment].join(" ").toLocaleLowerCase("es-AR");
+    return text.includes(query.trim().toLocaleLowerCase("es-AR")) && (!reason || row.deletionReason === reason) && (!from || day >= from) && (!to || day <= to);
+  }).sort((a, b) => (b.deletedAt ?? "").localeCompare(a.deletedAt ?? ""));
+  return <section className="space-y-5">
+    <div className="rounded-3xl border bg-white p-6 shadow-sm"><Badge className="bg-red-50 text-red-700">Control de bajas</Badge><h2 className="mt-3 text-3xl font-black">Eliminados</h2><p className="mt-1 text-muted-foreground">Historial de unidades retiradas del stock de fábrica, con motivo, comentario y responsable de la baja.</p><p className="mt-3 text-sm font-bold">{deleted.length} registros · {deleted.reduce((sum, row) => sum + Number(row.weightKg ?? 0), 0).toLocaleString("es-AR", { minimumFractionDigits: 3 })} kg · {deleted.reduce((sum, row) => sum + Number(row.units ?? 0), 0)} unidades</p></div>
+    <div className="flex flex-wrap items-end gap-3 rounded-2xl border bg-white p-4"><label className="min-w-52 flex-1 text-sm font-bold">Buscar<Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Producto, código, persona o comentario" /></label><label className="text-sm font-bold">Motivo<select className="block h-10 rounded-md border bg-white px-3" value={reason} onChange={(event) => setReason(event.target.value)}><option value="">Todos</option>{STOCK_REMOVAL_REASONS.map((item) => <option key={item}>{item}</option>)}</select></label><label className="text-sm font-bold">Desde<Input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label className="text-sm font-bold">Hasta<Input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label></div>
+    <div className="overflow-x-auto rounded-3xl border bg-white shadow-sm"><Table><TableHeader><TableRow><TableHead>Fecha de baja</TableHead><TableHead>Código / producto</TableHead><TableHead>Kg / unidades</TableHead><TableHead>Producción original</TableHead><TableHead>Eliminó</TableHead><TableHead>Motivo</TableHead><TableHead>Comentario</TableHead></TableRow></TableHeader><TableBody>
+      {deleted.length === 0 && <TableRow><TableCell colSpan={7} className="py-10 text-center text-muted-foreground">No hay eliminados para estos filtros.</TableCell></TableRow>}
+      {deleted.map((row) => <TableRow key={row.id}><TableCell className="whitespace-nowrap">{row.deletedAt ? new Date(row.deletedAt).toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" }) : "Sin fecha registrada"}</TableCell><TableCell><b className="font-mono">#{row.uniqueCode}</b><p className="font-bold">{row.productName}</p><p className="text-xs text-muted-foreground">{row.productCode} · {row.presentation}</p></TableCell><TableCell className="whitespace-nowrap">{row.weightKg != null ? Number(row.weightKg).toLocaleString("es-AR", { minimumFractionDigits: 3 }) + " kg" : (row.units ?? 0) + " u."}</TableCell><TableCell><b>{row.responsible}</b><p className="text-xs text-muted-foreground">{new Date(row.producedAt).toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" })}</p></TableCell><TableCell>{row.deletedByName ?? "Sin responsable registrado"}</TableCell><TableCell><Badge variant="outline" className="whitespace-normal text-red-700">{row.deletionReason ?? "Sin motivo registrado"}</Badge></TableCell><TableCell className="min-w-48 max-w-sm whitespace-pre-wrap break-words">{row.deletionComment || "Sin comentario"}</TableCell></TableRow>)}
+    </TableBody></Table></div>
+  </section>;
 }
 
 function ProductionHistory({ rows, canSeeCosts }: { rows: ProductionHistoryRow[]; canSeeCosts: boolean }) {
@@ -1140,7 +1208,7 @@ function ProductionHistory({ rows, canSeeCosts }: { rows: ProductionHistoryRow[]
     const haystack = `${row.uniqueCode} ${row.productCode} ${row.productName} ${row.responsible} ${row.clientName ?? ""} ${row.remittanceNumber ?? ""}`.toLowerCase();
     const compactHaystack = haystack.replace(/[^a-z0-9]/g, "");
     const matchesQuery = !normalizedQuery || haystack.includes(normalizedQuery) || compactHaystack.includes(compactQuery);
-    return matchesQuery && (status === "Todos" || (status === "En stock" ? row.status === "stock" : row.status === "despachado"));
+    return matchesQuery && (status === "Todos" || (status === "En stock" ? row.status === "stock" : status === "Eliminados" ? row.status === "baja" : row.status === "despachado"));
   });
   const exportExcel = () => {
     const escape = (value: unknown) => String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -1150,14 +1218,14 @@ function ProductionHistory({ rows, canSeeCosts }: { rows: ProductionHistoryRow[]
     const body = filtered.map((row) => {
       const cells: unknown[] = [new Date(row.producedAt).toLocaleString("es-AR"), row.uniqueCode, row.productCode, row.productName, row.presentation, row.weightKg ?? "", row.units ?? ""];
       if (canSeeCosts) cells.push(row.costPerKgSnapshot ?? "", row.weightKg != null && row.costPerKgSnapshot != null ? Number(row.weightKg) * Number(row.costPerKgSnapshot) : "");
-      cells.push(row.responsible, row.status === "stock" ? "En stock" : "Despachado", row.clientName ?? "", row.remittanceNumber ?? "", row.dispatchedAt ? new Date(row.dispatchedAt).toLocaleString("es-AR") : "");
+      cells.push(row.responsible, stockStatusLabel(row.status), row.clientName ?? "", row.remittanceNumber ?? "", row.dispatchedAt ? new Date(row.dispatchedAt).toLocaleString("es-AR") : "");
       return `<tr>${cells.map((cell) => `<td>${escape(cell)}</td>`).join("")}</tr>`;
     }).join("");
     const html = `<html><head><meta charset="UTF-8"></head><body><table border="1"><tr>${headings.map((heading) => `<th>${escape(heading)}</th>`).join("")}</tr>${body}</table></body></html>`;
     const url = URL.createObjectURL(new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8" }));
     const link = document.createElement("a"); link.href = url; link.download = `historico-produccion-${new Date().toISOString().slice(0, 10)}.xls`; link.click(); URL.revokeObjectURL(url);
   };
-  return <section className="space-y-5"><div className="flex flex-col gap-4 rounded-3xl border bg-white p-6 shadow-sm lg:flex-row lg:items-end lg:justify-between"><div><Badge className="bg-[#f4d5e1] text-[#983f62]">Trazabilidad</Badge><h2 className="mt-3 text-3xl font-black">Histórico de producción</h2><p className="mt-1 text-muted-foreground">Seguimiento completo desde la elaboración hasta la sucursal de destino.</p></div><Button onClick={exportExcel} className="rounded-xl bg-[#3b2931] text-white"><FileText /> Descargar Excel</Button></div><div className="flex flex-col gap-3 rounded-2xl border bg-white p-4 sm:flex-row"><div className="relative flex-1"><Search className="absolute left-3 top-3 size-4 text-muted-foreground"/><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar sabor, código, responsable, sucursal o remito" className="pl-9"/></div><select value={status} onChange={(event) => setStatus(event.target.value)} className="h-10 rounded-md border bg-white px-3"><option>Todos</option><option>En stock</option><option>Despachados</option></select></div><div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Producción</TableHead><TableHead>Código</TableHead><TableHead>Producto</TableHead><TableHead>Kg / unidades</TableHead>{canSeeCosts && <TableHead className="text-right">Costo producido</TableHead>}<TableHead>Responsable</TableHead><TableHead>Estado</TableHead><TableHead>Destino / remito</TableHead></TableRow></TableHeader><TableBody>{filtered.length === 0 && <TableRow><TableCell colSpan={canSeeCosts ? 8 : 7} className="py-10 text-center text-muted-foreground">No hay registros para estos filtros.</TableCell></TableRow>}{filtered.map((row) => <TableRow key={row.id}><TableCell className="whitespace-nowrap"><b>{new Date(row.producedAt).toLocaleDateString("es-AR")}</b><div className="text-xs text-muted-foreground">{new Date(row.producedAt).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })}</div></TableCell><TableCell className="font-mono font-bold">{row.uniqueCode}</TableCell><TableCell><b>{row.productName}</b><div className="text-xs text-muted-foreground">{row.productCode} · {row.presentation}</div></TableCell><TableCell>{row.weightKg != null ? `${Number(row.weightKg).toLocaleString("es-AR", { minimumFractionDigits: 3 })} kg` : `${row.units ?? 0} u.`}</TableCell>{canSeeCosts && <TableCell className="text-right">{row.weightKg != null && row.costPerKgSnapshot != null ? <><b>{money(Number(row.weightKg) * Number(row.costPerKgSnapshot))}</b><div className="text-xs text-muted-foreground">{money(Number(row.costPerKgSnapshot))}/kg</div></> : <span className="text-muted-foreground">Sin fórmula</span>}</TableCell>}<TableCell>{row.responsible}</TableCell><TableCell><Badge className={row.status === "stock" ? "bg-emerald-100 text-emerald-700" : "bg-blue-100 text-blue-700"}>{row.status === "stock" ? "En stock" : "Despachado"}</Badge></TableCell><TableCell>{row.clientName ? <><b>{row.clientName}</b><div className="text-xs text-muted-foreground">{row.remittanceNumber} · {row.dispatchedAt ? new Date(row.dispatchedAt).toLocaleDateString("es-AR") : ""}</div></> : <span className="text-muted-foreground">Sin despacho</span>}</TableCell></TableRow>)}</TableBody></Table></div></div></section>;
+  return <section className="space-y-5"><div className="flex flex-col gap-4 rounded-3xl border bg-white p-6 shadow-sm lg:flex-row lg:items-end lg:justify-between"><div><Badge className="bg-[#f4d5e1] text-[#983f62]">Trazabilidad</Badge><h2 className="mt-3 text-3xl font-black">Histórico de producción</h2><p className="mt-1 text-muted-foreground">Seguimiento completo desde la elaboración hasta la sucursal de destino.</p></div><Button onClick={exportExcel} className="rounded-xl bg-[#3b2931] text-white"><FileText /> Descargar Excel</Button></div><div className="flex flex-col gap-3 rounded-2xl border bg-white p-4 sm:flex-row"><div className="relative flex-1"><Search className="absolute left-3 top-3 size-4 text-muted-foreground"/><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar sabor, código, responsable, sucursal o remito" className="pl-9"/></div><select value={status} onChange={(event) => setStatus(event.target.value)} className="h-10 rounded-md border bg-white px-3"><option>Todos</option><option>En stock</option><option>Despachados</option><option>Eliminados</option></select></div><div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Producción</TableHead><TableHead>Código</TableHead><TableHead>Producto</TableHead><TableHead>Kg / unidades</TableHead>{canSeeCosts && <TableHead className="text-right">Costo producido</TableHead>}<TableHead>Responsable</TableHead><TableHead>Estado</TableHead><TableHead>Destino / remito</TableHead></TableRow></TableHeader><TableBody>{filtered.length === 0 && <TableRow><TableCell colSpan={canSeeCosts ? 8 : 7} className="py-10 text-center text-muted-foreground">No hay registros para estos filtros.</TableCell></TableRow>}{filtered.map((row) => <TableRow key={row.id}><TableCell className="whitespace-nowrap"><b>{new Date(row.producedAt).toLocaleDateString("es-AR")}</b><div className="text-xs text-muted-foreground">{new Date(row.producedAt).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" })}</div></TableCell><TableCell className="font-mono font-bold">{row.uniqueCode}</TableCell><TableCell><b>{row.productName}</b><div className="text-xs text-muted-foreground">{row.productCode} · {row.presentation}</div></TableCell><TableCell>{row.weightKg != null ? `${Number(row.weightKg).toLocaleString("es-AR", { minimumFractionDigits: 3 })} kg` : `${row.units ?? 0} u.`}</TableCell>{canSeeCosts && <TableCell className="text-right">{row.weightKg != null && row.costPerKgSnapshot != null ? <><b>{money(Number(row.weightKg) * Number(row.costPerKgSnapshot))}</b><div className="text-xs text-muted-foreground">{money(Number(row.costPerKgSnapshot))}/kg</div></> : <span className="text-muted-foreground">Sin fórmula</span>}</TableCell>}<TableCell>{row.responsible}</TableCell><TableCell><Badge className={row.status === "stock" ? "bg-emerald-100 text-emerald-700" : "bg-blue-100 text-blue-700"}>{stockStatusLabel(row.status)}</Badge></TableCell><TableCell>{row.clientName ? <><b>{row.clientName}</b><div className="text-xs text-muted-foreground">{row.remittanceNumber} · {row.dispatchedAt ? new Date(row.dispatchedAt).toLocaleDateString("es-AR") : ""}</div></> : <span className="text-muted-foreground">Sin despacho</span>}</TableCell></TableRow>)}</TableBody></Table></div></div></section>;
 }
 
 function Reports({ rows, canSeeCosts }: { rows: ProductionHistoryRow[]; canSeeCosts: boolean }) {
@@ -1170,7 +1238,7 @@ function Reports({ rows, canSeeCosts }: { rows: ProductionHistoryRow[]; canSeeCo
   const periodRows = rows.filter((row) => { const time = new Date(row.producedAt).getTime(); return time >= start && time <= end; });
   const producedKg = periodRows.reduce((sum, row) => sum + Number(row.weightKg ?? 0), 0);
   const productionCost = periodRows.reduce((sum, row) => sum + Number(row.weightKg ?? 0) * costPerKg(row), 0);
-  const openingRows = rows.filter((row) => new Date(row.producedAt).getTime() < start && (!row.dispatchedAt || new Date(row.dispatchedAt).getTime() >= start));
+  const openingRows = rows.filter((row) => new Date(row.producedAt).getTime() < start && (!row.dispatchedAt || new Date(row.dispatchedAt).getTime() >= start) && (!row.deletedAt || new Date(row.deletedAt).getTime() >= start));
   const currentRows = rows.filter((row) => row.status === "stock");
   const stockData = (source: ProductionHistoryRow[]) => ({ kg: source.reduce((sum, row) => sum + Number(row.weightKg ?? 0), 0), value: source.reduce((sum, row) => sum + Number(row.weightKg ?? 0) * costPerKg(row), 0) });
   const opening = stockData(openingRows), current = stockData(currentRows);
@@ -3495,6 +3563,7 @@ export default function Home() {
     inicio: "Panel general",
     produccion: "Producción",
     stock: "Stock de fábrica",
+    eliminados: "Eliminados",
     "historico-produccion": "Histórico de producción",
     despacho: "Nuevo despacho",
     remitos: "Remitos",
@@ -3549,7 +3618,15 @@ export default function Home() {
               responsibleOptions={staff}
             />
           )}{" "}
-          {view === "stock" && <Stock records={productionRecords} />} {view === "historico-produccion" && <ProductionHistory rows={productionHistory} canSeeCosts={currentUser?.role === "administracion"} />} {view === "despacho" && (
+          {view === "stock" && <Stock records={productionRecords} onRemove={async (uniqueCode, reason, comment) => {
+            const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "remove-stock", uniqueCode, reason, comment }) });
+            const result = await response.json() as { error?: string; unit?: ProductionHistoryRow };
+            if (!response.ok || !result.unit) throw new Error(result.error ?? "No se pudo eliminar la unidad.");
+            const unit = result.unit;
+            setProductionRecords((current) => current.filter((record) => record.uniqueCode !== uniqueCode));
+            setShiftRecords((current) => current.filter((record) => record.uniqueCode !== uniqueCode));
+            setProductionHistory((current) => [unit, ...current.filter((record) => record.uniqueCode !== uniqueCode)]);
+          }} />} {view === "eliminados" && <DeletedStock rows={productionHistory} />} {view === "historico-produccion" && <ProductionHistory rows={productionHistory} canSeeCosts={currentUser?.role === "administracion"} />} {view === "despacho" && (
             <Dispatch
               clients={clients}
               productFamilies={productFamilies}

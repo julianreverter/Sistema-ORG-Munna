@@ -1,3 +1,4 @@
+import { stockRemovalError } from "@/lib/stock-removal";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getChatGPTUser } from "@/app/chatgpt-auth";
 
@@ -178,6 +179,10 @@ function productionRow(row: Row) {
     family: product?.family ?? "",
     basePriceSnapshot: n(row.base_price_snapshot),
     costPerKgSnapshot: row.cost_per_kg_snapshot == null ? null : n(row.cost_per_kg_snapshot),
+    deletedAt: row.deleted_at,
+    deletedByName: row.deleted_by_name,
+    deletionReason: row.deletion_reason,
+    deletionComment: row.deletion_comment,
     status: row.status,
     lot: row.lot,
     expiresAt: row.expires_at,
@@ -521,6 +526,21 @@ export async function POST(request: Request) {
     const payload = await request.json() as Row;
     const financial = ["register-credit-note", "register-purchase", "update-purchase", "delete-purchase", "mark-purchase-paid", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "update-supplier", "archive-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "save-client", "save-product-family", "archive-product-family", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
     if (financial.includes(String(payload.action)) && profile.role !== "administracion") return Response.json({ error: "No tenés permiso para esta operación." }, { status: 403 });
+
+    if (payload.action === "remove-stock") {
+      const code = String(payload.uniqueCode ?? "").trim();
+      const comment = typeof payload.comment === "string" ? payload.comment.trim() : "";
+      const validation = stockRemovalError(payload.reason, payload.comment);
+      if (!code || validation) return Response.json({ error: validation ?? "Falta el código de la unidad." }, { status: 400 });
+      const saved = await supabase.from("production_units").update({ status: "baja", deletion_reason: payload.reason, deletion_comment: comment })
+        .eq("unique_code", code).eq("status", "stock")
+        .select("*, products(code,name,family,presentation,container), responsible:profiles!production_units_responsible_id_fkey(display_name)").maybeSingle();
+      if (saved.error) return Response.json({ error: saved.error.message }, { status: 409 });
+      if (!saved.data) return Response.json({ error: "La unidad ya fue eliminada, despachada o no está disponible. Actualizá el stock." }, { status: 409 });
+      const unit = productionRow(saved.data);
+      if (profile.role !== "administracion") delete (unit as Row).costPerKgSnapshot;
+      return Response.json({ unit });
+    }
 
     if (payload.action === "register-production") {
       const record = payload.record as Row;
