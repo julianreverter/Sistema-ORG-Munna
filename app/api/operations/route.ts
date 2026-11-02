@@ -1,3 +1,4 @@
+import { parsePackageWeight, presentationQuantityError } from "@/lib/product-inputs";
 import { stockRemovalError } from "@/lib/stock-removal";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getChatGPTUser } from "@/app/chatgpt-auth";
@@ -791,9 +792,12 @@ export async function POST(request: Request) {
       const requestedFamily = String(product?.family ?? "").trim();
       const families = await loadProductFamilies(supabase);
       const familyDefinition = findProductFamily(requestedFamily, families);
-      const packageWeightKg = n(product?.packageWeightKg);
+      const packageWeightKg = parsePackageWeight(product?.packageWeightKg ?? 0);
       if (!code || !name || !familyDefinition) return Response.json({ error: "Completá código, nombre y familia." }, { status: 400 });
       const family = familyDefinition.value;
+      if (packageWeightKg === null) return Response.json({ error: "El peso neto debe ser un número con hasta 3 decimales; podés usar coma o punto." }, { status: 400 });
+      const quantityError = presentationQuantityError(String(product?.presentation ?? ""));
+      if (quantityError) return Response.json({ error: quantityError }, { status: 400 });
       if (familyDefinition.requiresPackageWeight && packageWeightKg <= 0) return Response.json({ error: "Indicá cuántos kg netos trae la presentación para poder costearla." }, { status: 400 });
       if (payload.creating === true) {
         const existing = await supabase.from("products").select("id").eq("code", code).maybeSingle();

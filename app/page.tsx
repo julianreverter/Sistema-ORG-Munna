@@ -1,5 +1,6 @@
 "use client";
 
+import { parsePackageWeight, presentationParts, presentationQuantityError } from "@/lib/product-inputs";
 import { STOCK_REMOVAL_REASONS, stockRemovalError, stockStatusLabel } from "@/lib/stock-removal";
 
 import { useEffect, useMemo, useRef, useState, type Dispatch as StateDispatch, type SetStateAction } from "react";
@@ -1369,7 +1370,7 @@ type ProductProfile = Product & { packageWeightKg?: number; unitType?: "kg" | "u
 function Products({ productFamilies, setProductFamilies }: { productFamilies: ProductFamilyDefinition[]; setProductFamilies: StateDispatch<SetStateAction<ProductFamilyDefinition[]>> }) {
   const [products, setProducts] = useState<ProductProfile[]>(productCatalog);
   const [query, setQuery] = useState("");
-  const [editing, setEditing] = useState<ProductProfile | null>(null);
+  const [editing, setEditing] = useState<(ProductProfile & { packageWeightInput?: string }) | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deletingCode, setDeletingCode] = useState("");
@@ -1449,10 +1450,15 @@ function Products({ productFamilies, setProductFamilies }: { productFamilies: Pr
       setSaveError("Ya existe un producto con ese código.");
       return;
     }
-    if (needsPackageWeight(editing) && Number(editing.packageWeightKg ?? 0) <= 0) {
-      setSaveError("Indicá cuántos kg netos trae la presentación para poder calcular su costo.");
+    const weight = parsePackageWeight(editing.packageWeightInput ?? editing.packageWeightKg ?? 0);
+    const quantityError = presentationQuantityError(editing.presentation);
+    if (quantityError) { setSaveError(quantityError); return; }
+    if (needsPackageWeight(editing) && (weight === null || weight <= 0)) {
+      setSaveError("Indicá el peso neto en kg, mayor a cero y con hasta 3 decimales. Podés usar coma o punto.");
       return;
     }
+    const { packageWeightInput: _draftWeight, ...profile } = editing;
+    const productToSave: ProductProfile = { ...profile, packageWeightKg: weight ?? editing.packageWeightKg ?? 0 };
     setSaving(true);
     setSaveError("");
     setMessage("");
@@ -1460,12 +1466,12 @@ function Products({ productFamilies, setProductFamilies }: { productFamilies: Pr
       const response = await fetch("/api/operations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "save-product-profile", product: editing, creating: isCreating }),
+        body: JSON.stringify({ action: "save-product-profile", product: productToSave, creating: isCreating }),
       });
       const data = await response.json() as { error?: string };
       if (!response.ok) throw new Error(data.error ?? "No se pudo guardar el producto.");
       inactiveProductCodes.delete(editing.code);
-      const savedProduct = { ...editing, active: true };
+      const savedProduct = { ...productToSave, active: true };
       runtimeProductCatalog = runtimeProductCatalog.some((item) => item.code === editing.code)
         ? runtimeProductCatalog.map((item) => item.code === editing.code ? savedProduct : item)
         : [...runtimeProductCatalog, savedProduct];
@@ -1646,9 +1652,10 @@ function Products({ productFamilies, setProductFamilies }: { productFamilies: Pr
               <label className="space-y-2 text-sm font-bold sm:col-span-2">Nombre para sistema y etiqueta<Input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} className="font-normal" /></label>
               <label className="space-y-2 text-sm font-bold">Familia<select value={editing.family} onChange={(event) => setEditing({ ...editing, family: event.target.value })} className="h-10 w-full rounded-md border bg-white px-3 font-normal">{productFamilies.map((family) => <option key={family.value} value={family.value}>{family.label}</option>)}</select></label>
               <label className="space-y-2 text-sm font-bold">Presentación<Input value={editing.presentation} onChange={(event) => setEditing({ ...editing, presentation: event.target.value })} className="font-normal" /></label>
+              {presentationParts(editing.presentation) && <label className="space-y-2 text-sm font-bold">Unidades por presentación<Input type="number" inputMode="numeric" min="1" step="1" value={presentationParts(editing.presentation)?.quantity ?? ""} onChange={(event) => { const parts = presentationParts(editing.presentation); if (parts && /^\d*$/.test(event.target.value)) setEditing({ ...editing, presentation: parts.label + " x " + event.target.value }); }} className="font-normal" /><span className="block text-xs font-normal text-muted-foreground">Ejemplo: 10 guarda la presentación como «Caja x 10».</span></label>}
               <label className="space-y-2 text-sm font-bold">Envase<Input value={editing.container} onChange={(event) => setEditing({ ...editing, container: event.target.value })} className="font-normal" /></label>
               <label className="space-y-2 text-sm font-bold">Vencimiento (días)<Input type="number" value={editing.expiryDays} onChange={(event) => setEditing({ ...editing, expiryDays: Number(event.target.value) })} className="font-normal" /></label>
-              {needsPackageWeight(editing) && <label className="space-y-2 text-sm font-bold sm:col-span-2">Peso neto de la presentación (kg)<Input value={editing.packageWeightKg ?? ""} onChange={(event) => setEditing({ ...editing, packageWeightKg: Number(event.target.value.replace(",", ".")) || 0 })} inputMode="decimal" placeholder="Ej. 7,120" className="font-normal" /><span className="block text-xs font-normal text-muted-foreground">Ejemplo: una caja de 20 alfajores que pesa 7,120 kg. La fórmula sigue expresada por 1 kg y el sistema multiplica ese costo por este peso.</span></label>}
+              {needsPackageWeight(editing) && <label className="space-y-2 text-sm font-bold sm:col-span-2">Peso neto de la presentación (kg)<Input type="text" value={editing.packageWeightInput ?? (editing.packageWeightKg ? String(editing.packageWeightKg).replace(".", ",") : "")} onChange={(event) => setEditing({ ...editing, packageWeightInput: event.target.value })} inputMode="decimal" placeholder="Ej. 7,120" className="font-normal" /><span className="block text-xs font-normal text-muted-foreground">Peso total del contenido de la presentación, sin el envase. Acepta coma o punto (ej. 0,750 kg). La fórmula se expresa por 1 kg; el costo se multiplica por este peso. Al cambiar la cantidad por caja, revisá también este peso.</span></label>}
               <label className="space-y-2 text-sm font-bold sm:col-span-2">Ingredientes<Textarea value={editing.ingredients} placeholder="Pendiente de completar" onChange={(event) => setEditing({ ...editing, ingredients: event.target.value })} className="min-h-24 font-normal" /></label>
             </div>
           )}
