@@ -556,11 +556,11 @@ export async function POST(request: Request) {
       }
       const productionLead = teamMember ? activeProfiles.find((person: Row) => person.email?.toLowerCase() === PRODUCTION_LEAD_EMAIL) : null;
       if (teamMember && !productionLead) return Response.json({ error: "La responsable de producción no está activa." }, { status: 409 });
-      let { data: product } = await supabase.from("products").select("id").eq("code", String(record.productCode)).maybeSingle();
-      if (!product) {
-        const created = await supabase.from("products").insert({ code: String(record.productCode), name: String(record.productName ?? record.productCode), family: String(record.family ?? "Helado"), presentation: String(record.presentation ?? ""), container: String(record.container ?? ""), unit_type: record.units == null ? "kg" : "unidad", base_price: n(record.price) }).select("id").single();
-        if (created.error) throw created.error;
-        product = created.data;
+      const productResult = await supabase.from("products").select("id,active").eq("code", String(record.productCode)).maybeSingle();
+      if (productResult.error) throw productResult.error;
+      const product = productResult.data;
+      if (!product || product.active === false) {
+        return Response.json({ error: "El producto no está habilitado en el maestro. Pedile a Administración que lo revise y actualizá la página antes de registrar la producción." }, { status: 409 });
       }
 
       const [recipeResult, linksResult, materialResult] = await Promise.all([

@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 const source = fs.readFileSync('app/api/operations/route.ts','utf8');
 const compiled = ts.transpileModule(source + '\nexport { recipeCalculator, recipeLinks };', {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
-function fixture({ role='administracion', profile={}, rpcError=null, tables={} }={}) {
+function fixture({ role='administracion', profile={}, rpcError=null, productLookupError=null, tables={} }={}) {
   const writes=[];
   const context={exports:{},Response,console,require(name){
     if(name.includes('supabase')) return {createServerSupabaseClient:async()=>supabase};
@@ -13,7 +13,7 @@ function fixture({ role='administracion', profile={}, rpcError=null, tables={} }
     if(name.includes('product-families')) return {discountKeyForFamily:()=>'',findProductFamily:()=>null,normalizeProductFamilyDiscounts:(discounts)=>discounts??{}};
     return {getChatGPTUser:async()=>({id:'user'})};
   }};
-  const supabase={from(table){let single=false,inserted=null;const q={select(){return q},eq(){return q},order(){return q},limit(){return q},neq(){return q},single(){single=true;return q},maybeSingle(){single=true;return q},insert(values){inserted=values;writes.push({table,values});return q},then(resolve){let data=table==='profiles'?(tables.profiles??[{id:'user',email:'admin@test.local',display_name:'Admin',active:true,role,...profile}]):tables[table]??(table==='products'?[{id:20}]:[]);if(inserted)data=[{id:99,...inserted}];return Promise.resolve({data:single?data[0]??null:data,error:null}).then(resolve)}};return q}, async rpc(name,args){writes.push({name,args});return {data:{id:2,name:args.p_name},error:rpcError}}};
+  const supabase={from(table){let single=false,inserted=null;const q={select(){return q},eq(){return q},order(){return q},limit(){return q},neq(){return q},single(){single=true;return q},maybeSingle(){single=true;return q},insert(values){inserted=values;writes.push({table,values});return q},then(resolve){let data=table==='profiles'?(tables.profiles??[{id:'user',email:'admin@test.local',display_name:'Admin',active:true,role,...profile}]):tables[table]??(table==='products'?[{id:20}]:[]);if(inserted)data=[{id:99,...inserted}];return Promise.resolve({data:single?data[0]??null:data,error:table==='products'?productLookupError:null}).then(resolve)}};return q}, async rpc(name,args){writes.push({name,args});return {data:{id:2,name:args.p_name},error:rpcError}}};
   vm.runInNewContext(compiled,context);
   return {...context.exports,writes};
 }
@@ -117,4 +117,29 @@ test('formulas can be saved and edited without a master product',async()=>{
   const call=api.writes.find(row=>row.name==='save_named_recipe');
   assert.equal(call.args.p_recipe_id,12);assert.equal(call.args.p_product_id,null);
   assert.equal(api.writes.some(row=>row.table==='products'),false);
+});
+
+const productionRequest = () => new Request('http://test/api/operations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'register-production',record:{uniqueCode:'123456',productCode:'1014',units:20,responsible:'Admin'}})});
+test('production can label a box without writing to the product master',async()=>{
+  const api=fixture({role:'maestro_heladero',tables:{products:[{id:30,active:true}]}});
+  const response=await api.POST(productionRequest());
+  assert.equal(response.status,201,JSON.stringify(await response.json()));
+  assert.equal(api.writes.some(row=>row.table==='products'),false);
+  assert.equal(api.writes.find(row=>row.table==='production_units').values.units,20);
+});
+test('missing or archived products never trigger product creation or production writes',async()=>{
+  for(const products of [[],[{id:30,active:false}]]){
+    const api=fixture({role:'maestro_heladero',tables:{products}});
+    const response=await api.POST(productionRequest());
+    assert.equal(response.status,409);
+    assert.match((await response.json()).error,/Administración/);
+    assert.equal(api.writes.length,0);
+  }
+});
+test('a failed product lookup surfaces the error without attempting product insertion',async()=>{
+  const api=fixture({productLookupError:{message:'Product lookup failed'},tables:{products:[]}});
+  const response=await api.POST(productionRequest());
+  assert.equal(response.status,500);
+  assert.match((await response.json()).error,/Product lookup failed/);
+  assert.equal(api.writes.length,0);
 });
