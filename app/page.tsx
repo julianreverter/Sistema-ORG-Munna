@@ -1277,7 +1277,8 @@ function Dispatch({ clients, productFamilies, availableUnits, onConfirm }: { cli
   const lineAmount = (record: ProductionRecord) => {
     if (!selectedClient) return 0;
     const billableWeight = record.weight === null ? null : record.weight + (selectedClient.billingWeight === "Bruto" ? tareFor(record) : 0);
-    const subtotal = billableWeight === null ? record.price : billableWeight * record.price;
+    const quantity = billableWeight ?? record.units ?? 0;
+    const subtotal = quantity * record.price;
     return subtotal * (1 - discountFor(selectedClient, record.family, productFamilies) / 100);
   };
   const total = lines.reduce((sum, record) => sum + lineAmount(record), 0);
@@ -1343,7 +1344,7 @@ function Dispatch({ clients, productFamilies, availableUnits, onConfirm }: { cli
               <div className="grid size-9 place-items-center rounded-xl bg-[#fbe7ef] text-[#ad416a]"><PackageCheck className="size-4" /></div>
               <div>
                 <p className="text-sm font-bold">{record.productName}</p>
-                <p className="text-xs text-muted-foreground">#{record.uniqueCode} · {record.weight !== null ? `${record.weight.toLocaleString("es-AR", { minimumFractionDigits: 3 })} kg ${selectedClient?.billingWeight.toLowerCase()}` : `${record.units} unidades`} · Desc. {selectedClient ? discountFor(selectedClient, record.family, productFamilies) : 0}%</p>
+                <p className="text-xs text-muted-foreground">#{record.uniqueCode} · {record.weight !== null ? `${record.weight.toLocaleString("es-AR", { minimumFractionDigits: 3 })} kg ${selectedClient?.billingWeight.toLowerCase()}` : `${record.units} unidades × ${currency.format(record.price)} c/u`} · Desc. {selectedClient ? discountFor(selectedClient, record.family, productFamilies) : 0}%</p>
               </div>
               <div className="text-right"><p className="text-sm font-black">{currency.format(lineAmount(record))}</p><button onClick={() => setLines((current) => current.filter((item) => item.uniqueCode !== record.uniqueCode))} className="text-xs font-bold text-[#a94068]">Quitar</button></div>
             </div>
