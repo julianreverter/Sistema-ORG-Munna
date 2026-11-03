@@ -50,3 +50,19 @@ export function summarizeChecks(rows: IssuedCheck[], month: string) {
     pending: cents(pending), previous: cents(previous), totalPending: cents([...pending, ...previous]),
   };
 }
+
+// Calendar week in Argentina, Monday through Sunday. Keep all overdue pending
+// checks, even when their due date belongs to an earlier month or year.
+export function weeklyChecks(rows: IssuedCheck[], day = argentinaDay()) {
+  const current = new Date(`${day}T12:00:00Z`);
+  const start = new Date(current);
+  start.setUTCDate(current.getUTCDate() - (current.getUTCDay() + 6) % 7);
+  const end = new Date(start);
+  end.setUTCDate(start.getUTCDate() + 6);
+  const endDay = end.toISOString().slice(0, 10);
+  const checks = rows.filter(row => row.status === "pending" && row.due_on <= endDay);
+  return {
+    start: start.toISOString().slice(0, 10), end: endDay, checks,
+    total: checks.reduce((sum, row) => sum + Math.round(Number(row.amount) * 100), 0) / 100,
+  };
+}

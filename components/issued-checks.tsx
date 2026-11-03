@@ -1,14 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, RefreshCw } from "lucide-react";
+import { CalendarClock, Plus, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { argentinaDay, checkInputError, summarizeChecks, type IssuedCheck } from "@/lib/issued-checks";
+import { argentinaDay, checkInputError, summarizeChecks, weeklyChecks, type IssuedCheck } from "@/lib/issued-checks";
 
 const money = (amount: number) => amount.toLocaleString("es-AR", { style: "currency", currency: "ARS" });
 const date = (day: string | null) => day ? day.split("-").reverse().join("/") : "—";
@@ -52,14 +52,16 @@ export function IssuedChecks() {
   }, []);
 
   const summary = summarizeChecks(rows, month);
+  const today = argentinaDay();
+  const week = weeklyChecks(rows, today);
   const filtered = rows.filter(row => {
     const day = basis === "issued_on" ? row.issued_on : basis === "debited_on" ? row.debited_on : row.due_on;
-    const periodMatches = basis === "previous" ? row.status === "pending" && row.due_on < `${month}-01` : Boolean(day?.startsWith(month));
+    const periodMatches = basis === "week" ? row.status === "pending" && row.due_on <= week.end
+      : basis === "previous" ? row.status === "pending" && row.due_on < `${month}-01` : Boolean(day?.startsWith(month));
     return periodMatches && (status === "all" || row.status === status)
       && `${row.number} ${row.bank} ${row.beneficiary}`.toLocaleLowerCase("es-AR").includes(search.trim().toLocaleLowerCase("es-AR"));
   });
   const visibleTotal = filtered.filter(row => row.status !== "cancelled").reduce((total, row) => total + Math.round(Number(row.amount) * 100), 0) / 100;
-  const today = argentinaDay();
   function edit(row: IssuedCheck, debit = false) {
     setFormError("");
     setDraft({ ...row, amount: Number(row.amount).toFixed(2).replace(".", ","), ...(debit ? { status: "debited" as const, debited_on: today } : {}) });
@@ -84,28 +86,41 @@ export function IssuedChecks() {
       <div><h1 className="text-2xl font-black">Cheques emitidos</h1><p className="mt-1 text-sm text-muted-foreground">Controlá vencimientos y registrá cuándo se debita cada cheque de la cuenta.</p></div>
       <div className="flex gap-2"><Button variant="outline" disabled={loading || saving} onClick={() => void load()}><RefreshCw className="size-4"/>Actualizar</Button><Button className="bg-[#3b2931] text-white" onClick={() => { setFormError(""); setDraft(newDraft()); }}><Plus className="size-4"/>Nuevo cheque</Button></div>
     </div>
+    {loaded && <div className="overflow-hidden rounded-3xl border border-[#3b2931] bg-[#3b2931] p-6 text-white shadow-lg sm:p-8">
+      <div className="flex flex-wrap items-start justify-between gap-6">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 text-sm font-bold text-[#f4bfd3]"><CalendarClock className="size-5"/>Semana del {date(week.start)} al {date(week.end)}</div>
+          <h2 className="mt-3 text-xl font-black sm:text-2xl">A debitar esta semana</h2>
+          <p className="mt-2 break-words text-4xl font-black tracking-tight sm:text-5xl lg:text-6xl">{money(week.total)}</p>
+          <p className="mt-3 max-w-2xl text-sm text-white/80">Incluye todos los vencidos sin debitar y los cheques que vencen hasta el domingo, aunque sean de otros meses.</p>
+        </div>
+        <div className="flex flex-col items-start gap-3 sm:items-end">
+          <span className="rounded-full bg-white/10 px-4 py-2 text-sm font-bold">{week.checks.length} cheque{week.checks.length === 1 ? "" : "s"} pendiente{week.checks.length === 1 ? "" : "s"}</span>
+          <Button variant="outline" className="border-white/30 bg-white text-[#3b2931] hover:bg-[#fff0f6] hover:text-[#3b2931]" onClick={() => { setBasis("week"); setStatus("pending"); setSearch(""); }}>Ver cheques de esta semana</Button>
+        </div>
+      </div>
+    </div>}
     <div className="flex flex-wrap items-end gap-4 rounded-2xl border bg-white p-4">
       <label className="space-y-1 text-sm font-bold">Mes<Input type="month" value={month} onChange={event => { if (/^\d{4}-\d{2}$/.test(event.target.value)) setMonth(event.target.value); }}/></label>
-      <p className="max-w-xl text-sm text-muted-foreground">Los totales muestran el mes seleccionado. Un cheque vencido sigue pendiente hasta que registres su débito real.</p>
+      <p className="max-w-xl text-sm text-muted-foreground">Resumen del mes seleccionado. El destacado semanal siempre muestra la semana actual.</p>
     </div>
     {error && <div role="alert" className="rounded-xl bg-red-50 p-4 text-sm text-red-700">{error} <button className="font-bold underline" onClick={() => void load()}>Reintentar</button></div>}
     {loaded && <>
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {([
+          ["Falta pagar en el mes", summary.totalPending, summary.previous > 0 ? `Incluye ${money(summary.previous)} vencidos de meses anteriores` : "Todo lo pendiente hasta el fin de este mes"],
           ["Emitido en el mes", summary.issued, "Según fecha de emisión"],
           ["Vence en el mes", summary.due, "Compromisos del mes, sin anulados"],
           ["Ya debitado del mes", summary.paid, "De los cheques que vencen en este mes"],
-          ["Falta pagar del mes", summary.pending, "Con vencimiento en este mes"],
-          ["Pendiente de meses anteriores", summary.previous, "Todavía sin débito registrado"],
-          ["Total pendiente hasta este mes", summary.totalPending, "Pendiente del mes + meses anteriores"],
-        ] as const).map(([label, amount, hint]) => <div key={label} className={`rounded-2xl border p-5 ${label === "Falta pagar del mes" ? "bg-[#fff0f6]" : "bg-white"}`}><p className="text-sm font-bold text-muted-foreground">{label}</p><p className="mt-2 text-2xl font-black">{money(amount)}</p><p className="mt-1 text-xs text-muted-foreground">{hint}</p></div>)}
+        ] as const).map(([label, amount, hint]) => <div key={label} className={`rounded-2xl border p-5 ${label === "Falta pagar en el mes" ? "border-[#e5aec5] bg-[#fff0f6]" : "bg-white"}`}><p className="text-sm font-bold text-muted-foreground">{label}</p><p className="mt-2 text-2xl font-black">{money(amount)}</p><p className="mt-1 text-xs text-muted-foreground">{hint}</p></div>)}
       </div>
       <div className="space-y-4 rounded-2xl border bg-white p-4">
         <div className="grid gap-3 sm:grid-cols-3">
-          <label className="space-y-1 text-sm font-bold">Ver cheques<select className={selectClass} value={basis} onChange={event => setBasis(event.target.value)}><option value="due_on">Por vencimiento</option><option value="issued_on">Por emisión</option><option value="debited_on">Por débito real</option><option value="previous">Pendientes de meses anteriores</option></select></label>
+          <label className="space-y-1 text-sm font-bold">Ver cheques<select className={selectClass} value={basis} onChange={event => { setBasis(event.target.value); if (event.target.value === "week") setStatus("pending"); }}><option value="week">A debitar esta semana</option><option value="due_on">Por vencimiento</option><option value="issued_on">Por emisión</option><option value="debited_on">Por débito real</option><option value="previous">Pendientes de meses anteriores</option></select></label>
           <label className="space-y-1 text-sm font-bold">Estado<select className={selectClass} value={status} onChange={event => setStatus(event.target.value)}><option value="all">Todos</option><option value="pending">Pendientes</option><option value="debited">Debitados</option><option value="cancelled">Anulados</option></select></label>
           <label className="space-y-1 text-sm font-bold">Buscar<Input value={search} onChange={event => setSearch(event.target.value)} placeholder="Beneficiario, número o banco"/></label>
         </div>
+        {basis === "week" && <p className="rounded-xl bg-[#fff0f6] px-4 py-3 text-sm">Vencidos pendientes y vencimientos hasta el {date(week.end)}. Esta vista incluye todos los meses.</p>}
         <div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Emisión</TableHead><TableHead>Vencimiento</TableHead><TableHead>Beneficiario</TableHead><TableHead>Cheque / banco</TableHead><TableHead className="text-right">Importe</TableHead><TableHead>Estado</TableHead><TableHead>Débito real</TableHead><TableHead>Acciones</TableHead></TableRow></TableHeader><TableBody>
           {filtered.map(row => <TableRow key={row.id} className={row.status === "debited" ? "bg-emerald-50" : row.status === "cancelled" ? "bg-slate-50 text-muted-foreground" : ""}>
             <TableCell>{date(row.issued_on)}</TableCell><TableCell>{date(row.due_on)}{row.status === "pending" && row.due_on < today && <span className="block text-xs font-bold text-amber-700">Vencido sin débito</span>}</TableCell>
