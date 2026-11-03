@@ -1,5 +1,6 @@
 "use client";
 
+import { barcodeGeometry, productionLabelHtml } from "@/lib/production-label";
 import { parsePackageWeight, presentationParts, presentationQuantityError } from "@/lib/product-inputs";
 import { STOCK_REMOVAL_REASONS, stockRemovalError, stockStatusLabel } from "@/lib/stock-removal";
 
@@ -119,6 +120,7 @@ type View =
   | "usuarios";
 
 type ProductionRecord = {
+  registrationId?: string;
   uniqueCode: string;
   productCode: string;
   productName: string;
@@ -134,39 +136,12 @@ type ProductionRecord = {
 type ProductionHistoryRow = { deletedAt?: string | null; deletedByName?: string | null; deletionReason?: string | null; deletionComment?: string | null; id: number; uniqueCode: string; productCode: string; productName: string; presentation: string; container: string; weightKg: number | null; units: number | null; responsible: string; status: string; costPerKgSnapshot?: number | null; producedAt: string; dispatchedAt: string | null; remittanceNumber: string | null; clientName: string | null };
 type StaffMember = { id: number; email: string; displayName: string; role: "produccion" | "encargado" | "administracion"; active: boolean };
 
-const CODE128_PATTERNS = [
-  "212222","222122","222221","121223","121322","131222","122213","122312","132212","221213","221312","231212",
-  "112232","122132","122231","113222","123122","123221","223211","221132","221231","213212","223112","312131",
-  "311222","321122","321221","312212","322112","322211","212123","212321","232121","111323","131123","131321",
-  "112313","132113","132311","211313","231113","231311","112133","112331","132131","113123","113321","133121",
-  "313121","211331","231131","213113","213311","213131","311123","311321","331121","312113","312311","332111",
-  "314111","221411","431111","111224","111422","121124","121421","141122","141221","112214","112412","122114",
-  "122411","142112","142211","241211","221114","413111","241112","134111","111242","121142","121241","114212",
-  "124112","124211","411212","421112","421211","212141","214121","412121","111143","111341","131141","114113",
-  "114311","411113","411311","113141","114131","311141","411131","211412","211214","211232","2331112",
-];
-
 function Code128Barcode({ value }: { value: string }) {
-  const digits = value.replace(/[^0-9]/g, "").padStart(6, "0");
-  const evenDigits = digits.length % 2 === 0 ? digits : `0${digits}`;
-  const data = evenDigits.match(/.{2}/g)?.map(Number) ?? [];
-  let checksum = 105;
-  data.forEach((code, index) => { checksum += code * (index + 1); });
-  const codes = [105, ...data, checksum % 103, 106];
-  const bars: Array<{ x: number; width: number }> = [];
-  let x = 0;
-  for (const code of codes) {
-    const pattern = CODE128_PATTERNS[code];
-    for (let index = 0; index < pattern.length; index += 1) {
-      const width = Number(pattern[index]);
-      if (index % 2 === 0) bars.push({ x, width });
-      x += width;
-    }
-  }
+  const { digits, bars, width } = barcodeGeometry(value);
   return (
     <svg
       className="barcode-svg h-11 w-full"
-      viewBox={`-10 0 ${x + 20} 42`}
+      viewBox={`-10 0 ${width} 42`}
       preserveAspectRatio="none"
       role="img"
       aria-label={`Código de barras ${digits}`}
@@ -180,7 +155,7 @@ function Code128Barcode({ value }: { value: string }) {
 }
 
 function openProductionLabelWindow() {
-  const printWindow = window.open("", "munna-production-label", "popup,width=900,height=700");
+  const printWindow = window.open("", "_blank", "popup,width=900,height=700");
   if (printWindow) {
     printWindow.document.write("<!doctype html><title>Etiqueta Münna</title><p style='font-family:Arial;padding:24px'>Preparando etiqueta…</p>");
     printWindow.document.close();
@@ -188,9 +163,8 @@ function openProductionLabelWindow() {
   return printWindow;
 }
 
-function printProductionLabel(printWindow: Window | null = openProductionLabelWindow()) {
-  const label = document.getElementById("print-production-label");
-  if (!label || !printWindow) return false;
+function printProductionLabel(printWindow: Window | null, labelHtml: string) {
+  if (!labelHtml || !printWindow) return false;
 
   const printDocument = printWindow.document;
 
@@ -248,7 +222,7 @@ function printProductionLabel(printWindow: Window | null = openProductionLabelWi
           }
         </style>
       </head>
-      <body>${label.outerHTML}</body>
+      <body>${labelHtml}</body>
     </html>`);
   printDocument.close();
 
@@ -285,6 +259,7 @@ function printProductionLabel(printWindow: Window | null = openProductionLabelWi
       ),
     );
     await new Promise<void>((resolve) => window.setTimeout(resolve, 300));
+    printWindow.addEventListener("afterprint", () => printWindow.close(), { once: true });
     printWindow.focus();
     printWindow.print();
   };
@@ -649,16 +624,18 @@ function Production({
   records,
   onRegister,
   onFinalize,
-  nextUniqueCode,
   responsibleOptions,
 }: {
   records: ProductionRecord[];
-  onRegister: (record: ProductionRecord) => Promise<void>;
+  onRegister: (record: ProductionRecord) => Promise<ProductionRecord>;
   onFinalize: () => void;
-  nextUniqueCode: string;
   responsibleOptions: StaffMember[];
 }) {
   const [saved, setSaved] = useState(false);
+  const [savedCode, setSavedCode] = useState("");
+  const savedLabel = useRef("");
+  const registration = useRef<{ key: string; id: string } | null>(null);
+  const registrationInProgress = useRef(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [product, setProduct] = useState("");
@@ -697,6 +674,7 @@ function Production({
           <label className="space-y-2 text-sm font-bold">
             Producto
             <Combobox
+              disabled={saving}
               items={productionProducts()}
               value={product}
               onValueChange={(value) => {
@@ -743,6 +721,7 @@ function Production({
             {isWeightProduct ? (
               <>
                 <Input
+                  disabled={saving}
                   inputMode="decimal"
                   value={weight}
                   onChange={(e) => {
@@ -757,6 +736,7 @@ function Production({
             ) : (
               <>
                 <Input
+                  disabled={saving}
                   inputMode="numeric"
                   value={quantity}
                   onChange={(event) => {
@@ -780,7 +760,7 @@ function Production({
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="space-y-2 text-sm font-bold">
             Elaborado por
-            <select value={selectedResponsible} onChange={(event) => setResponsible(event.target.value)} className="h-11 w-full rounded-xl border bg-white px-3 font-normal">
+            <select disabled={saving} value={selectedResponsible} onChange={(event) => { setResponsible(event.target.value); setSaved(false); }} className="h-11 w-full rounded-xl border bg-white px-3 font-normal">
               <option value="" disabled>Seleccioná quién elaboró</option>
               {producerNames.map((name) => <option key={name} value={name}>{name}</option>)}
             </select>
@@ -797,13 +777,20 @@ function Production({
         <Button
           disabled={!product || !selectedProduct || !selectedResponsible || saved || saving || (isWeightProduct ? !weight.trim() : !quantity.trim())}
           onClick={async () => {
-            if (!selectedProduct) return;
+            if (!selectedProduct || registrationInProgress.current) return;
+            const label = document.getElementById("print-production-label");
+            if (!label) { setSaveError("No se encontró la etiqueta. Recargá la página."); return; }
+            const frozenLabel = label.cloneNode(true) as HTMLElement;
+            const key = JSON.stringify([selectedProduct.code, weight, quantity, selectedResponsible, selectedProduct.price]);
+            if (registration.current?.key !== key) registration.current = { key, id: crypto.randomUUID() };
+            registrationInProgress.current = true;
             const printWindow = openProductionLabelWindow();
             setSaving(true);
             setSaveError("");
             try {
-              await onRegister({
-                uniqueCode: nextUniqueCode,
+              const registered = await onRegister({
+                registrationId: registration.current.id,
+                uniqueCode: "",
                 productCode: selectedProduct.code,
                 productName: selectedProduct.name,
                 container: selectedProduct.container,
@@ -815,14 +802,19 @@ function Production({
                 price: selectedProduct.price,
                 presentation: selectedProduct.presentation,
               });
+              const html = productionLabelHtml(frozenLabel, registered.uniqueCode);
+              savedLabel.current = html;
+              setSavedCode(registered.uniqueCode);
               setSaved(true);
-              if (!printProductionLabel(printWindow)) {
+              registration.current = null;
+              if (!printProductionLabel(printWindow, html)) {
                 setSaveError("La producción se guardó, pero Chrome bloqueó la ventana de impresión. Habilitá las ventanas emergentes y usá Reimprimir etiqueta.");
               }
             } catch (error) {
               printWindow?.close();
               setSaveError(error instanceof Error ? error.message : "No se pudo registrar la producción.");
             } finally {
+              registrationInProgress.current = false;
               setSaving(false);
             }
           }}
@@ -847,7 +839,7 @@ function Production({
             onClick={() => {
               setSaveError("");
               const printWindow = openProductionLabelWindow();
-              if (!printProductionLabel(printWindow)) {
+              if (!printProductionLabel(printWindow, savedLabel.current)) {
                 setSaveError("Chrome bloqueó la ventana de impresión. Habilitá las ventanas emergentes y volvé a intentarlo.");
               }
             }}
@@ -887,7 +879,7 @@ function Production({
             </div>
             <div className="text-right leading-tight">
               <p className="text-[8px] font-bold">CÓDIGO ÚNICO</p>
-              <p className="text-sm font-black">#{nextUniqueCode}</p>
+              <p data-production-code="hash" className="text-sm font-black">{saved ? "#" + savedCode : "Se asigna al guardar"}</p>
             </div>
           </div>
 
@@ -922,8 +914,8 @@ function Production({
               <p><b>RNE:</b> pendiente · <b>RNPA:</b> pendiente</p>
             </div>
             <div className="overflow-hidden pt-1">
-              <Code128Barcode value={nextUniqueCode} />
-              <p className="text-center font-mono text-[9px] leading-none tracking-[.28em]">{nextUniqueCode}</p>
+              <div data-production-barcode>{saved ? <Code128Barcode value={savedCode} /> : <p className="py-3 text-center text-xs">Vista previa · sin código asignado</p>}</div>
+              <p data-production-code="plain" className="text-center font-mono text-[9px] leading-none tracking-[.28em]">{saved ? savedCode : "Pendiente"}</p>
             </div>
           </div>
         </div>
@@ -3589,7 +3581,6 @@ export default function Home() {
   const [productFamilies, setProductFamilies] = useState<ProductFamilyDefinition[]>(PRODUCT_FAMILIES);
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [currentUser, setCurrentUser] = useState<StaffMember | null>(null);
-  const [nextUniqueCode, setNextUniqueCode] = useState("004530");
   const [databaseStatus, setDatabaseStatus] = useState<"connecting" | "live" | "error">("connecting");
   useEffect(() => {
     let active = true;
@@ -3616,7 +3607,6 @@ export default function Home() {
           responsible: String(unit.responsible), time: new Date(String(unit.createdAt)).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }),
           family: String(unit.family), price: Number(unit.basePriceSnapshot), presentation: String(unit.presentation),
         })));
-        setNextUniqueCode(data.nextUniqueCode ?? "004530");
         setProductionHistory(data.productionHistory ?? []);
         const loadedFamilies = data.productFamilies?.length ? data.productFamilies : PRODUCT_FAMILIES;
         setProductFamilies(loadedFamilies);
@@ -3659,11 +3649,13 @@ export default function Home() {
             <Production
               records={shiftRecords}
               onRegister={async (record) => {
-                const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "register-production", record }) });
-                const result = await response.json() as { error?: string; unit?: { id: number; status?: string; created_at?: string } };
+                const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "register-production", labelProtocol: 2, record }) });
+                const result = await response.json() as { error?: string; unit?: { id: number; status?: string; created_at?: string; unique_code?: string } };
                 if (!response.ok) throw new Error(result.error ?? "No se pudo registrar la producción.");
-                setShiftRecords((current) => [...current, record]);
-                setProductionRecords((current) => [...current, record]);
+                if (!result.unit?.unique_code) throw new Error("No se confirmó el código de la unidad. No imprimas la etiqueta; recargá la página.");
+                record = { ...record, uniqueCode: result.unit.unique_code };
+                setShiftRecords((current) => [...current.filter((row) => row.uniqueCode !== record.uniqueCode), record]);
+                setProductionRecords((current) => [...current.filter((row) => row.uniqueCode !== record.uniqueCode), record]);
                 setProductionHistory((current) => [{
                   id: Number(result.unit?.id ?? Date.now()),
                   uniqueCode: record.uniqueCode,
@@ -3679,11 +3671,10 @@ export default function Home() {
                   dispatchedAt: null,
                   remittanceNumber: null,
                   clientName: null,
-                }, ...current]);
-                setNextUniqueCode((current) => String(Number(current) + 1).padStart(6, "0"));
+                }, ...current.filter((row) => row.uniqueCode !== record.uniqueCode)]);
+                return record;
               }}
               onFinalize={() => setShiftRecords([])}
-              nextUniqueCode={nextUniqueCode}
               responsibleOptions={staff}
             />
           )}{" "}

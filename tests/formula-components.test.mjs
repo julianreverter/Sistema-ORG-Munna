@@ -77,7 +77,7 @@ test('production snapshots use the live composed formula cost',async()=>{
   const base=recipe(1,[material(1,1000)]);base.product_id=10;
   const child=recipe(2,[{...material(2,10000),quantity_kg:.1}]);child.product_id=20;
   const api=fixture({tables:{recipes:[base,child],recipe_formula_items:[{recipe_id:2,component_recipe_id:1,quantity_kg:.9}]}});
-  const response=await api.POST(new Request('http://test/api/operations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'register-production',record:{uniqueCode:'123456',productCode:'GR',weight:5,responsible:'Admin'}})}));
+  const response=await api.POST(new Request('http://test/api/operations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'register-production',labelProtocol:2,record:{registrationId:'10000000-0000-4000-8000-000000000001',uniqueCode:'123456',productCode:'GR',weight:5,responsible:'Admin'}})}));
   const body=await response.json();
   assert.equal(response.status,201,JSON.stringify(body));assert.equal(body.costPerKgSnapshot,1900);
   assert.equal(api.writes.find(row=>row.table==='production_units').values.cost_per_kg_snapshot,1900);
@@ -88,7 +88,7 @@ test('production supervisors never receive production costs',async()=>{
   const child=recipe(2,[{...material(2,10000),quantity_kg:.1}]);child.product_id=20;
   const profile={email:'evelindemasi@gmail.com',display_name:'Evelin De Masi'};
   const api=fixture({role:'jefe_produccion',profile,tables:{recipes:[base,child],recipe_formula_items:[{recipe_id:2,component_recipe_id:1,quantity_kg:.9}]}});
-  const response=await api.POST(new Request('http://test/api/operations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'register-production',record:{uniqueCode:'123456',productCode:'GR',weight:5,responsible:'Evelin De Masi'}})}));
+  const response=await api.POST(new Request('http://test/api/operations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'register-production',labelProtocol:2,record:{registrationId:'10000000-0000-4000-8000-000000000001',uniqueCode:'123456',productCode:'GR',weight:5,responsible:'Evelin De Masi'}})}));
   const body=await response.json();
   assert.equal(response.status,201,JSON.stringify(body));
   assert.equal(Object.hasOwn(body,'costPerKgSnapshot'),false);
@@ -119,7 +119,7 @@ test('formulas can be saved and edited without a master product',async()=>{
   assert.equal(api.writes.some(row=>row.table==='products'),false);
 });
 
-const productionRequest = () => new Request('http://test/api/operations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'register-production',record:{uniqueCode:'123456',productCode:'1014',units:20,responsible:'Admin'}})});
+const productionRequest = () => new Request('http://test/api/operations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'register-production',labelProtocol:2,record:{registrationId:'10000000-0000-4000-8000-000000000001',uniqueCode:'123456',productCode:'1014',units:20,responsible:'Admin'}})});
 test('production can label a box without writing to the product master',async()=>{
   const api=fixture({role:'maestro_heladero',tables:{products:[{id:30,active:true}]}});
   const response=await api.POST(productionRequest());
