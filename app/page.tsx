@@ -1878,7 +1878,11 @@ function Clients({ clients, setClients, productFamilies }: { clients: Client[]; 
   );
 }
 
+type CustomerReturnReceipt = { id: number; amount: number; reason: string; comment: string; received_by: string; created_at: string };
+
 type RemittanceItem = {
+  returnedAt?: string | null;
+  returnReceipt?: CustomerReturnReceipt | null;
   uniqueCode: string;
   productCode: string;
   productName: string;
@@ -2060,10 +2064,49 @@ function printRemittanceA4(remittance: RemittanceRecord) {
   }
 }
 
-function Remittances({ productionRows }: { productionRows: ProductionHistoryRow[] }) {
+function printCustomerReturn(remittance: RemittanceRecord, item: RemittanceItem) {
+  const receipt = item.returnReceipt;
+  if (!receipt) return;
+  const popup = window.open("", "munna-return-note", "popup,width=900,height=750");
+  if (!popup) return;
+  const escape = (value: unknown) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+  const number = "NC-D-" + String(receipt.id).padStart(6, "0");
+  const quantity = item.weightKg != null ? item.weightKg + " kg" : item.units + " unidades";
+  popup.document.write('<html><head><meta charset="utf-8"><title>' + number + '</title><style>body{font-family:Arial,sans-serif;padding:35px;color:#222}h1{font-size:24px}table{border-collapse:collapse;width:100%;margin:24px 0}td,th{border:1px solid #ccc;padding:12px;text-align:left}p{line-height:1.6}.total{text-align:right;font-size:22px}</style></head><body><h1>Münna · Nota de crédito interna ' + number + '</h1><p>Cliente: <b>' + escape(remittance.clientName) + '</b><br>Remito original: ' + escape(remittance.remittanceNumber) + '<br>Fecha de devolución: ' + escape(new Date(receipt.created_at).toLocaleString("es-AR")) + '</p><table><tr><th>Código</th><th>Producto</th><th>Contenido devuelto</th><th>Crédito</th></tr><tr><td>' + escape(item.uniqueCode) + '</td><td>' + escape(item.productName) + '</td><td>' + escape(quantity) + '</td><td>' + escape(money(Number(receipt.amount))) + '</td></tr></table><p>Motivo: ' + escape(receipt.reason) + '<br>Comentario: ' + escape(receipt.comment || "Sin comentario") + '<br>Recibió: ' + escape(receipt.received_by) + '<br>Destino: reingreso de la unidad completa al stock de cámara.</p><p class="total">Total acreditado: <b>' + escape(money(Number(receipt.amount))) + '</b></p><p>Comprobante interno de devolución. No es un comprobante fiscal.</p></body></html>');
+  popup.document.close(); popup.focus(); popup.print();
+}
+
+function Remittances({ productionRows, canReturn, onReturned }: { productionRows: ProductionHistoryRow[]; canReturn: boolean; onReturned: () => Promise<void> }) {
   const [rows, setRows] = useState<RemittanceRecord[]>([]);
   const [selected, setSelected] = useState<RemittanceRecord | null>(null);
   const [query, setQuery] = useState("");
+  const [returnOpen, setReturnOpen] = useState(false);
+  const [returnCode, setReturnCode] = useState("");
+  const [returnReason, setReturnReason] = useState("");
+  const [returnComment, setReturnComment] = useState("");
+  const [receivedComplete, setReceivedComplete] = useState(false);
+  const [returnSaving, setReturnSaving] = useState(false);
+  const [returnError, setReturnError] = useState("");
+  const [returnNotice, setReturnNotice] = useState("");
+  const returnItem = selected?.items.find((item) => item.uniqueCode.toUpperCase() === returnCode.trim().toUpperCase());
+  const saveReturn = async () => {
+    if (!selected || !returnItem || returnSaving) return;
+    setReturnSaving(true); setReturnError("");
+    try {
+      const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "register-customer-return", dispatchId: selected.id, uniqueCode: returnItem.uniqueCode, reason: returnReason, comment: returnComment, receivedComplete }) });
+      const result = await response.json() as { error?: string; receipt?: { creditNoteNumber: string; amount: number } };
+      if (!response.ok) throw new Error(result.error ?? "No se pudo registrar la devolución.");
+      setReturnOpen(false);
+      setReturnNotice((result.receipt?.creditNoteNumber ?? "Nota de crédito interna") + " registrada por " + money(Number(result.receipt?.amount ?? 0)) + ". La unidad volvió al stock de cámara.");
+      const refreshed = await fetch("/api/operations");
+      const data = await refreshed.json() as { remittances?: RemittanceRecord[]; error?: string };
+      if (!refreshed.ok) throw new Error("La devolución se guardó, pero no se pudo actualizar la pantalla. Recargá la página.");
+      setRows(data.remittances ?? []);
+      setSelected((data.remittances ?? []).find((row) => row.id === selected.id) ?? null);
+      await onReturned();
+    } catch (error) { setReturnError(error instanceof Error ? error.message : "No se pudo registrar la devolución."); }
+    finally { setReturnSaving(false); }
+  };
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   useEffect(() => {
@@ -2188,6 +2231,8 @@ function Remittances({ productionRows }: { productionRows: ProductionHistoryRow[
                 <DialogTitle>Remito {selected.remittanceNumber}</DialogTitle>
                 <DialogDescription>{selected.clientName} · {new Date(selected.createdAt).toLocaleString("es-AR")}</DialogDescription>
               </DialogHeader>
+              {returnError && !returnOpen && <p role="alert" className="text-sm text-red-700">{returnError}</p>}
+              {returnNotice && <p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-800">{returnNotice}</p>}
               <div id="print-remittance" className="rounded-2xl border bg-white p-5 text-black">
                 <div className="flex items-start justify-between border-b-2 border-black pb-4">
                   <div className="relative h-12 w-60 overflow-hidden">
@@ -2220,7 +2265,7 @@ function Remittances({ productionRows }: { productionRows: ProductionHistoryRow[
                       <TableRow key={item.uniqueCode}>
                         <TableCell className="font-mono font-bold">{item.uniqueCode}</TableCell>
                         <TableCell><b>{item.productName}</b><div className="text-xs text-muted-foreground">{item.productCode} · {item.presentation || item.container}</div></TableCell>
-                        <TableCell>{quantityLabel(item)}</TableCell>
+                        <TableCell>{quantityLabel(item)}{item.returnedAt && <div className="mt-1 text-xs font-bold text-amber-700">Devuelto completo · {new Date(item.returnedAt).toLocaleDateString("es-AR")}{item.returnReceipt && <Button size="sm" variant="ghost" onClick={() => printCustomerReturn(selected, item)}>Imprimir NC-D-{String(item.returnReceipt.id).padStart(6, "0")}</Button>}</div>}</TableCell>
                         <TableCell>{Number(item.discountPct).toLocaleString("es-AR", { maximumFractionDigits: 2 })}%</TableCell>
                         <TableCell className="text-right">{money(item.lineTotal)}</TableCell>
                       </TableRow>
@@ -2235,10 +2280,26 @@ function Remittances({ productionRows }: { productionRows: ProductionHistoryRow[
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setSelected(null)}>Cerrar</Button>
+                {canReturn && !selected.status.toLowerCase().includes("anul") && selected.items.some((item) => !item.returnedAt) && <Button variant="outline" onClick={() => { setReturnCode(""); setReturnReason(""); setReturnComment(""); setReceivedComplete(false); setReturnError(""); setReturnNotice(""); setReturnOpen(true); }}>Registrar devolución</Button>}
                 <Button onClick={() => printRemittanceA4(selected)} className="bg-[#3c2931] text-white"><Printer /> Imprimir remito A4</Button>
               </DialogFooter>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+      <Dialog open={returnOpen} onOpenChange={(open) => { if (!returnSaving) setReturnOpen(open); }}>
+        <DialogContent className="sm:max-w-lg"><DialogHeader><DialogTitle>Devolución completa</DialogTitle><DialogDescription>{selected?.clientName} · {selected?.remittanceNumber}. Se acredita el importe original y vuelve al stock la misma unidad o caja completa.</DialogDescription></DialogHeader>
+          <div className="space-y-4">
+            <label className="block text-sm font-bold">Escanear código de la unidad<Input autoFocus value={returnCode} disabled={returnSaving} onChange={(event) => setReturnCode(event.target.value)} placeholder="Código de barras de la unidad devuelta" onKeyDown={(event) => { if (event.key === "Enter") event.preventDefault(); }} /></label>
+            {returnCode.trim() && !returnItem && <p className="text-sm text-red-700">Este código no pertenece al remito seleccionado.</p>}
+            {returnItem && <div className="rounded-xl border bg-[#fff5f8] p-3 text-sm"><b>{returnItem.productName}</b><p>{quantityLabel(returnItem)} · Crédito: {money(returnItem.lineTotal)}</p>{returnItem.returnedAt && <p className="font-bold text-red-700">Esta unidad ya fue devuelta en este remito.</p>}</div>}
+            <label className="block text-sm font-bold">Motivo<select className="mt-1 h-10 w-full rounded-md border bg-white px-3" value={returnReason} disabled={returnSaving} onChange={(event) => setReturnReason(event.target.value)}><option value="">Elegí un motivo</option><option>No entró en el freezer</option><option>Pedido incorrecto</option><option>Otro</option></select></label>
+            <label className="block text-sm font-bold">Comentario {returnReason === "Otro" ? "(obligatorio)" : "(opcional)"}<Textarea value={returnComment} maxLength={2000} disabled={returnSaving} onChange={(event) => setReturnComment(event.target.value)} /></label>
+            <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={receivedComplete} disabled={returnSaving} onChange={(event) => setReceivedComplete(event.target.checked)} />Recibí la unidad completa, como se entregó, y está apta para volver al stock de cámara.</label>
+            <p className="text-xs text-muted-foreground">Genera una nota de crédito interna en la cuenta corriente del cliente.</p>
+            {returnError && <p role="alert" className="text-sm text-red-700">{returnError}</p>}
+          </div>
+          <DialogFooter><Button variant="outline" disabled={returnSaving} onClick={() => setReturnOpen(false)}>Cancelar</Button><Button className="bg-[#3c2931] text-white" disabled={returnSaving || !returnItem || !!returnItem.returnedAt || !receivedComplete || !returnReason || (returnReason === "Otro" && !returnComment.trim())} onClick={saveReturn}>{returnSaving ? "Guardando…" : "Confirmar crédito y reingreso"}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
     </section>
@@ -2423,7 +2484,7 @@ function ProfitAndLoss() {
     const matches = (date: string) => date.slice(0, 7) === month.key;
     const revenue = area === "Fábrica"
       ? dispatchRows.filter((row) => matches(row.createdAt)).reduce((sum, row) => sum + Number(row.total), 0)
-        + adjustments.filter((row) => row.signedAmount > 0 && matches(row.movementDate)).reduce((sum, row) => sum + Number(row.signedAmount), 0)
+        + adjustments.filter((row) => (row.signedAmount > 0 || row.concept.startsWith("NC-D-")) && matches(row.movementDate)).reduce((sum, row) => sum + Number(row.signedAmount), 0)
       : sales.filter((row) => row.area === area && matches(row.saleDate)).reduce((sum, row) => sum + Number(row.amount), 0);
     const purchaseAllocations = purchaseRows.filter((row) => matches(row.invoiceDate)).flatMap((row) => row.allocations?.length ? row.allocations : [{ kind: "material" as const, category: "Materia prima", center: row.costCenter, description: "Compra de mercadería", gross: Number(row.grossTotal) }]);
     const merchandise = purchaseAllocations.filter((item) => item.center === area && item.kind === "material").reduce((sum, item) => sum + Number(item.gross), 0);
@@ -3667,7 +3728,17 @@ export default function Home() {
           {view === "costos" && <Costs />}{" "}
           {view === "resultados" && <ProfitAndLoss />}{" "}
           {view === "nueva-compra" && <Costs initialPurchaseOpen />}{" "}
-          {view === "remitos" && <Remittances productionRows={productionHistory} />}{" "}
+          {view === "remitos" && <Remittances productionRows={productionHistory} canReturn={currentUser?.role === "administracion"} onReturned={async () => {
+            const response = await fetch("/api/operations");
+            const data = await response.json();
+            if (!response.ok) throw new Error("Recargá la página para actualizar el stock.");
+            setProductionHistory(data.productionHistory ?? []);
+            setProductionRecords((data.stock ?? []).map((unit: Record<string, unknown>) => ({
+              uniqueCode: String(unit.uniqueCode), productCode: String(unit.productCode), productName: String(unit.productName), container: String(unit.container),
+              weight: unit.weightKg == null ? null : Number(unit.weightKg), units: unit.units == null ? null : Number(unit.units), responsible: String(unit.responsible),
+              time: new Date(String(unit.createdAt)).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" }), family: String(unit.family), price: Number(unit.basePriceSnapshot), presentation: String(unit.presentation),
+            })));
+          }} />}{" "}
           {view === "usuarios" && <StaffManagement staff={staff} setStaff={setStaff} />}{" "}
           {view === "reportes" && <Reports rows={productionHistory} canSeeCosts={currentUser?.role === "administracion"} />}
         </main>

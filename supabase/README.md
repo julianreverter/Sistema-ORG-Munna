@@ -1,5 +1,15 @@
 # Supabase — Sistema ORG Münna
 
+## Devoluciones completas de clientes
+
+Aplicar `20261103192925_customer_returns.sql` antes de desplegar la pantalla. Administración abre Remitos, selecciona la entrega original y usa Registrar devolución. Se escanea una unidad o caja completa, se indica el motivo y se confirma su recepción apta para volver a cámara. No hay devolución parcial de unidades dentro de una caja.
+
+La función `register_customer_return` acredita el importe del renglón original con su descuento, genera la referencia NC-D y devuelve la misma unidad al stock con su código original. Las tres escrituras se confirman en una transacción. Un renglón puede devolverse solo una vez. La unidad puede despacharse nuevamente en otro remito; cada entrega y devolución permanece en el historial. El remito original conserva su importe y el crédito se registra en la cuenta corriente. La nota imprimible es un comprobante interno, sin integración fiscal.
+
+Solo Administración puede confirmar devoluciones y consultar el comprobante financiero. La función usa SECURITY INVOKER y las políticas RLS existentes; la nueva tabla tiene políticas de lectura e inserción administrativas y actualización únicamente de su vínculo con el ajuste contable. No se conceden permisos de borrado.
+
+Validación: `npm test` cubre permisos, entradas y el destino del último despacho pendiente. `node tests/customer-returns-migration.mjs` prueba el SQL con PGlite, sin conectarse a la base real; `PGLITE_MODULE` permite indicar la ruta absoluta del módulo instalado. Verifica el crédito con descuento, duplicados, re-despacho del mismo código, RLS y reversión completa ante una falla al reingresar stock.
+
 ## Bajas de stock con historial
 
 La migración `20261101233725_stock_removal_audit.sql` agrega la auditoría de bajas sobre la producción existente. Aplicarla antes de desplegar la pantalla de Eliminados. No elimina registros ni modifica el stock existente.

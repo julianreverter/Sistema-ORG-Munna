@@ -164,7 +164,8 @@ async function refreshMaterialCosts(supabase: any, requestedNames: string[] = []
 
 function productionRow(row: Row) {
   const product = one(row.products) as Row | null;
-  const item = one(row.dispatch_items) as Row | null;
+  const dispatchItems = Array.isArray(row.dispatch_items) ? row.dispatch_items : row.dispatch_items ? [row.dispatch_items] : [];
+  const item = dispatchItems.filter((entry: Row) => !entry.returned_at).sort((a: Row, b: Row) => n(b.id) - n(a.id))[0] as Row | undefined;
   const dispatch = item ? one(item.dispatches) as Row | null : null;
   const client = dispatch ? one(dispatch.clients) as Row | null : null;
   return {
@@ -207,6 +208,8 @@ function dispatchRow(row: Row) {
       const unit = one(item.production_units) as Row | null;
       const product = unit ? one(unit.products) as Row | null : null;
       return {
+        returnedAt: item.returned_at ?? null,
+        returnReceipt: one(item.customer_returns),
         uniqueCode: unit?.unique_code ?? "",
         productCode: product?.code ?? "",
         productName: product?.name ?? "",
@@ -270,10 +273,10 @@ function clientRow(row: Row, families: ProductFamilyDefinition[]) {
 export async function GET() {
   try {
     const { profile, supabase } = await context();
-    const productionSelect = "*, products(code,name,family,presentation,container), responsible:profiles!production_units_responsible_id_fkey(display_name), dispatch_items(dispatches(remittance_number,clients(name)))";
+    const productionSelect = "*, products(code,name,family,presentation,container), responsible:profiles!production_units_responsible_id_fkey(display_name), dispatch_items(id,returned_at,dispatches(remittance_number,clients(name)))";
     const [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, recipesResult, productsResult, clientsResult, productFamiliesResult] = await Promise.all([
       supabase.from("production_units").select(productionSelect).order("id", { ascending: false }).limit(5000),
-      supabase.from("dispatches").select("*, clients(name), dispatch_items(*, production_units(unique_code,weight_kg,units,products(code,name,family,presentation,container)))").order("id", { ascending: false }).limit(5000),
+      supabase.from("dispatches").select("*, clients(name), dispatch_items(*, customer_returns(id,amount,reason,comment,received_by,created_at), production_units(unique_code,weight_kg,units,products(code,name,family,presentation,container)))").order("id", { ascending: false }).limit(5000),
       supabase.from("customer_payments").select("*, clients(name)").order("id", { ascending: false }).limit(500),
       supabase.from("customer_account_adjustments").select("*, clients(name)").order("id", { ascending: false }).limit(500),
       supabase.from("operating_expenses").select("*").order("id", { ascending: false }).limit(5000),
@@ -525,7 +528,7 @@ export async function POST(request: Request) {
   try {
     const { user, profile, supabase } = await context();
     const payload = await request.json() as Row;
-    const financial = ["register-credit-note", "register-purchase", "update-purchase", "delete-purchase", "mark-purchase-paid", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "update-supplier", "archive-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "save-client", "save-product-family", "archive-product-family", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
+    const financial = ["register-customer-return","register-credit-note", "register-purchase", "update-purchase", "delete-purchase", "mark-purchase-paid", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "update-supplier", "archive-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "save-client", "save-product-family", "archive-product-family", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
     if (financial.includes(String(payload.action)) && profile.role !== "administracion") return Response.json({ error: "No tenés permiso para esta operación." }, { status: 403 });
 
     if (payload.action === "remove-stock") {
@@ -541,6 +544,15 @@ export async function POST(request: Request) {
       const unit = productionRow(saved.data);
       if (profile.role !== "administracion") delete (unit as Row).costPerKgSnapshot;
       return Response.json({ unit });
+    }
+
+    if (payload.action === "register-customer-return") {
+      const dispatchId = Number(payload.dispatchId);
+      const code = String(payload.uniqueCode ?? "").trim();
+      if (!Number.isSafeInteger(dispatchId) || dispatchId <= 0 || !code || payload.receivedComplete !== true) return Response.json({ error: "Seleccioná el remito y confirmá que recibiste la unidad completa y apta para volver a cámara." }, { status: 400 });
+      const result = await supabase.rpc("register_customer_return", { p_dispatch_id: dispatchId, p_code: code, p_reason: String(payload.reason ?? ""), p_comment: String(payload.comment ?? "") });
+      if (result.error) return Response.json({ error: result.error.message }, { status: 409 });
+      return Response.json({ receipt: result.data }, { status: 201 });
     }
 
     if (payload.action === "register-production") {
