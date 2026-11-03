@@ -1,5 +1,7 @@
 "use client";
 
+import { IssuedChecks } from "@/components/issued-checks";
+
 import { barcodeGeometry, productionLabelHtml } from "@/lib/production-label";
 import { parsePackageWeight, presentationParts, presentationQuantityError } from "@/lib/product-inputs";
 import { STOCK_REMOVAL_REASONS, stockRemovalError, stockStatusLabel } from "@/lib/stock-removal";
@@ -103,6 +105,7 @@ import {
 } from "@/components/ui/table";
 
 type View =
+  | "cheques"
   | "inicio"
   | "produccion"
   | "stock"
@@ -280,6 +283,7 @@ const menu = [
   ["reportes", "Reportes", ClipboardList],
 ] as const;
 const adminMenu = [
+  ["cheques", "Cheques emitidos", WalletCards],
   ["resultados", "Estado de resultados", WalletCards],
   ["costos", "Costos y formulas", Calculator],
   ["productos", "Productos", ShoppingBag],
@@ -3619,6 +3623,7 @@ export default function Home() {
     return () => { active = false; };
   }, []);
   const titles: Record<View, string> = {
+    cheques: "Cheques emitidos",
     inicio: "Panel general",
     produccion: "Producción",
     stock: "Stock de fábrica",
@@ -3718,6 +3723,7 @@ export default function Home() {
           {view === "cta-clientes" && <CustomerAccounts clients={clients} />}{" "}
           {view === "costos" && <Costs />}{" "}
           {view === "resultados" && <ProfitAndLoss />}{" "}
+          {view === "cheques" && currentUser?.role === "administracion" && <IssuedChecks />}
           {view === "nueva-compra" && <Costs initialPurchaseOpen />}{" "}
           {view === "remitos" && <Remittances productionRows={productionHistory} canReturn={currentUser?.role === "administracion"} onReturned={async () => {
             const response = await fetch("/api/operations");
