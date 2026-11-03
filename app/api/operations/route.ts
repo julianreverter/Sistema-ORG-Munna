@@ -557,7 +557,8 @@ export async function POST(request: Request) {
 
     if (payload.action === "register-production") {
       const record = payload.record as Row;
-      if (!record?.uniqueCode || !record.productCode) return Response.json({ error: "Faltan datos de producción." }, { status: 400 });
+      if (payload.labelProtocol !== 2) return Response.json({ error: "Actualizá esta pantalla con Ctrl + F5 antes de registrar e imprimir. Cambió la asignación de códigos para evitar etiquetas duplicadas." }, { status: 409 });
+      if (!record?.productCode || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(record.registrationId ?? ""))) return Response.json({ error: "Faltan datos de producción. Recargá la página." }, { status: 400 });
       const elaboratedBy = String(record.responsible ?? "").trim();
       const teamMember = PRODUCTION_TEAM.some((name) => name === elaboratedBy);
       const profilesResult = await supabase.from("profiles").select("id,email,display_name").eq("active", true);
@@ -591,15 +592,23 @@ export async function POST(request: Request) {
       const recipe = (recipeResult.data ?? []).find((row: Row) => n(row.product_id) === n(product.id));
       const costPerKgSnapshot = recipe ? recipeCalculator(recipeResult.data ?? [], linksResult.links, currentMaterials)(n(recipe.id)).perKg : null;
 
-      const saved = await supabase.from("production_units").insert({
-        unique_code: String(record.uniqueCode), product_id: product.id, weight_kg: record.weight == null ? null : n(record.weight),
+      let saved = await supabase.from("production_units").insert({
+        registration_id: record.registrationId, product_id: product.id, weight_kg: record.weight == null ? null : n(record.weight),
         units: record.units == null ? null : n(record.units), responsible_id: productionLead?.id ?? user.id, elaborated_by: elaboratedBy, created_by: user.id,
         base_price_snapshot: n(record.price), cost_per_kg_snapshot: costPerKgSnapshot, lot: record.lot || null, expires_at: record.expiresAt || null,
-      }).select("id,status,created_at").single();
+      }).select("id,status,created_at,unique_code,product_id,weight_kg,units,elaborated_by,created_by").single();
+      if (saved.error?.code === "23505") {
+        const existing = await supabase.from("production_units").select("id,status,created_at,unique_code,product_id,weight_kg,units,elaborated_by,created_by").eq("registration_id", String(record.registrationId)).maybeSingle();
+        if (existing.error) throw existing.error;
+        if (existing.data && existing.data.status !== "stock") return Response.json({ error: "Esta producción ya está registrada como #" + existing.data.unique_code + " y ya no está en stock. Revisá el histórico; no vuelvas a registrarla." }, { status: 409 });
+        if (existing.data && existing.data.created_by === user.id && n(existing.data.product_id) === n(product.id) && existing.data.elaborated_by === elaboratedBy && (existing.data.weight_kg == null ? null : n(existing.data.weight_kg)) === (record.weight == null ? null : n(record.weight)) && (existing.data.units == null ? null : n(existing.data.units)) === (record.units == null ? null : n(record.units))) saved = { data: existing.data, error: null } as typeof saved;
+        else return Response.json({ error: "Este intento ya corresponde a otra unidad o a otros datos. Recargá la pantalla antes de continuar." }, { status: 409 });
+      }
       if (saved.error) throw saved.error;
       return Response.json({
         unit: {
           id: saved.data.id,
+          unique_code: saved.data.unique_code,
           status: saved.data.status,
           created_at: saved.data.created_at,
         },

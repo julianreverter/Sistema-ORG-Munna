@@ -1,5 +1,15 @@
 # Supabase — Sistema ORG Münna
 
+## Códigos de producción e impresión
+
+Aplicar `20261103194944_server_production_codes.sql` y `20261103195624_production_counter_catchup.sql` antes de publicar la pantalla de etiquetas. El código se asigna en la base al insertar, mediante una secuencia inicializada por encima de todos los códigos numéricos históricos. Se conserva la restricción UNIQUE y se omiten códigos ocupados durante la transición. Los códigos históricos no cambian.
+
+El registro exige el protocolo de etiquetas 2 y un UUID por intento. Una pantalla anterior recibe una indicación de recargar antes de guardar. Reintentar el mismo UUID recupera la misma unidad en stock si coinciden el usuario, producto, elaborador, peso y cantidad; no crea otra unidad. No se acepta reutilizarlo para otros datos ni para una unidad que ya salió del stock.
+
+La impresión usa una copia congelada de la etiqueta y el código confirmado en la respuesta del servidor, tanto para el número visible como para el Code 128. Cada impresión abre una ventana independiente. Reimprimir conserva esa misma copia. La vista previa no anuncia ni codifica un número sin registrar.
+
+Validación: `npm test` incluye cambio de peso durante el guardado, reintentos y bloqueo de pantallas antiguas. `node tests/server-production-codes-migration.mjs` verifica la asignación y restricciones en PGlite (puede usarse `PGLITE_MODULE`), incluida la transición a códigos de siete dígitos. No se registra producción real para las pruebas.
+
 ## Devoluciones completas de clientes
 
 Aplicar `20261103192925_customer_returns.sql` antes de desplegar la pantalla. Administración abre Remitos, selecciona la entrega original y usa Registrar devolución. Se escanea una unidad o caja completa, se indica el motivo y se confirma su recepción apta para volver a cámara. No hay devolución parcial de unidades dentro de una caja.
