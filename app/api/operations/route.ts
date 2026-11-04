@@ -22,6 +22,17 @@ async function context() {
   return { user, profile, supabase };
 }
 
+const PAYROLL_PREFIX = "__MUNNA_PAYROLL_V1__:";
+const payrollMeta = (notes: unknown) => {
+  if (typeof notes !== "string" || !notes.startsWith(PAYROLL_PREFIX)) return null;
+  try { return JSON.parse(notes.slice(PAYROLL_PREFIX.length)); } catch { return null; }
+};
+const expenseView = (r: Row) => {
+  const meta = payrollMeta(r.notes);
+  const labels: Record<string,string> = {servicios:"Servicios",alquileres:"Alquileres",sueldos:"Sueldos",mantenimiento:"Mantenimiento",inversiones:"Inversiones",otros:"Otros"};
+  return {...r, expenseDate:r.expense_date, amount:Number(r.amount), category:labels[r.category] ?? "Otros", notes:meta ? meta.notes : r.notes, employee:meta?.employee, payrollPeriod:meta?.period, paymentStatus:meta?.status};
+};
+
 const one = <T,>(value: T | T[] | null): T | null => Array.isArray(value) ? (value[0] ?? null) : value;
 const n = (value: unknown) => Number(value ?? 0);
 const today = () => new Date().toISOString().slice(0, 10);
@@ -469,7 +480,7 @@ export async function GET() {
       customerAdjustments: canSeeFinancials ? (adjustmentsResult.data ?? []).map((r: Row) => ({ ...r, clientId: r.client_id, clientName: one(r.clients)?.name, movementDate: r.movement_date, movementType: r.movement_type, signedAmount: n(r.signed_amount), createdAt: r.created_at })) : [],
       operatingExpenses: canSeeFinancials ? (expensesResult.data ?? []).map((r: Row) => {
         const labels: Record<string, string> = { servicios: "Servicios", alquileres: "Alquileres", sueldos: "Sueldos", mantenimiento: "Mantenimiento", inversiones: "Inversiones", otros: "Otros" };
-        return { ...r, expenseDate: r.expense_date, createdAt: r.created_at, amount: n(r.amount), category: labels[String(r.category)] ?? "Otros" };
+        return { ...expenseView(r), createdAt: r.created_at };
       }) : [],
       localSales: canSeeFinancials ? (salesResult.data ?? []).map((r: Row) => ({ ...r, saleDate: r.sale_date, createdAt: r.created_at, amount: n(r.amount) })) : [],
       purchases: canSeeFinancials ? purchaseRows : [],
@@ -528,7 +539,7 @@ export async function POST(request: Request) {
   try {
     const { user, profile, supabase } = await context();
     const payload = await request.json() as Row;
-    const financial = ["register-customer-return","register-credit-note", "register-purchase", "update-purchase", "delete-purchase", "mark-purchase-paid", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "update-supplier", "archive-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "save-client", "save-product-family", "archive-product-family", "register-customer-payment", "register-customer-adjustment", "register-expense", "register-local-sale", "save-staff"];
+    const financial = ["register-customer-return","register-credit-note", "register-purchase", "update-purchase", "delete-purchase", "mark-purchase-paid", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "update-supplier", "archive-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "save-client", "save-product-family", "archive-product-family", "register-customer-payment", "register-customer-adjustment", "register-expense", "pay-expense", "register-local-sale", "save-staff"];
     if (financial.includes(String(payload.action)) && profile.role !== "administracion") return Response.json({ error: "No tenés permiso para esta operación." }, { status: 403 });
 
     if (payload.action === "remove-stock") {
@@ -1156,13 +1167,34 @@ export async function POST(request: Request) {
       if (result.error) throw result.error; return Response.json({ movement: result.data }, { status: 201 });
     }
 
+    if (payload.action === "pay-expense") {
+      const id = Number(payload.id);
+      if (!Number.isSafeInteger(id) || id <= 0) return Response.json({error:"Gasto inválido."},{status:400});
+      const existing = await supabase.from("operating_expenses").select("*").eq("id",id).single();
+      if (existing.error) throw existing.error;
+      const meta = payrollMeta(existing.data?.notes);
+      if (!meta || meta.status !== "Pendiente") return Response.json({error:"El sueldo no está pendiente."},{status:409});
+      const result = await supabase.from("operating_expenses").update({notes:PAYROLL_PREFIX+JSON.stringify({...meta,status:"Pagado"})}).eq("id",id).eq("notes",existing.data.notes).select().maybeSingle();
+      if (result.error) throw result.error;
+      if (!result.data) return Response.json({error:"El registro cambió. Actualizá la pantalla."},{status:409});
+      return Response.json({expense:expenseView(result.data)});
+    }
+
     if (payload.action === "register-expense" || payload.action === "register-local-sale") {
       const entry = (payload.expense ?? payload.sale) as Row;
       if (payload.action === "register-expense") {
         const allowed = ["servicios","alquileres","sueldos","mantenimiento","inversiones","otros"];
         const category = String(entry.category ?? "otros").toLowerCase();
-        const result = await supabase.from("operating_expenses").insert({ expense_date: entry.expenseDate || today(), area: String(entry.area), category: allowed.includes(category) ? category : "otros", concept: String(entry.concept), amount: Math.abs(n(entry.amount)), notes: entry.notes || null, created_by: user.id }).select().single();
-        if (result.error) throw result.error; return Response.json({ expense: result.data }, { status: 201 });
+        if (!entry.area || !String(entry.concept ?? "").trim() || !Number.isFinite(Number(entry.amount)) || Number(entry.amount) <= 0) return Response.json({error:"Completá área, concepto e importe positivo."},{status:400});
+        let notes = entry.notes || null;
+        let date = entry.expenseDate || today();
+        if (category === "sueldos") {
+          if (!String(entry.employee ?? "").trim() || !/^\d{4}-(0[1-9]|1[0-2])$/.test(String(entry.payrollPeriod)) || !["Pendiente","Pagado"].includes(entry.paymentStatus)) return Response.json({error:"Completá empleado o equipo, período y estado de pago."},{status:400});
+          date = `${entry.payrollPeriod}-01`;
+          notes = PAYROLL_PREFIX+JSON.stringify({employee:String(entry.employee).trim(),period:entry.payrollPeriod,status:entry.paymentStatus,notes:entry.notes || ""});
+        } else if (String(notes ?? "").startsWith(PAYROLL_PREFIX)) return Response.json({error:"Observaciones inválidas."},{status:400});
+        const result = await supabase.from("operating_expenses").insert({ expense_date: date, area: String(entry.area), category: allowed.includes(category) ? category : "otros", concept: String(entry.concept), amount: Number(entry.amount), notes, created_by: user.id }).select().single();
+        if (result.error) throw result.error; return Response.json({ expense: expenseView(result.data) }, { status: 201 });
       }
       const result = await supabase.from("local_sales").insert({ sale_date: entry.saleDate || today(), area: String(entry.area), concept: String(entry.concept), amount: Math.abs(n(entry.amount)), notes: entry.notes || null, created_by: user.id }).select().single();
       if (result.error) throw result.error; return Response.json({ sale: result.data }, { status: 201 });
