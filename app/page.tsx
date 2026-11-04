@@ -2457,7 +2457,7 @@ function CustomerAccounts({ clients }: { clients: Client[] }) {
   </section>;
 }
 
-type FinancialExpense = { id: number; expenseDate: string; area: string; category: string; concept: string; amount: number; notes: string | null };
+type FinancialExpense = { id: number; expenseDate: string; area: string; category: string; concept: string; amount: number; notes: string | null; employee?: string; payrollPeriod?: string; paymentStatus?: string };
 type ExpenseAnalysisRow = { id: string; date: string; center: string; category: string; kind: "material" | "service" | "expense"; concept: string; supplier: string; invoice: string; amount: number };
 type LocalSale = { id: number; saleDate: string; area: string; concept: string; amount: number; notes: string | null };
 type FinancialPurchase = { id: number; invoiceDate: string; costCenter: string; grossTotal: number; allocations?: PurchaseAllocation[] };
@@ -2760,7 +2760,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
   const [formula, setFormula] = useState<FormulaDraft>({ id: null, productCode: "", name: "", yieldKg: "1", items: [{ materialId: "", quantityKg: "" }] });
   const [purchase, setPurchase] = useState({ supplier: "", invoice: "", invoiceDate: today, dueDate: "", center: "Fábrica", payment: "Cuenta corriente" });
   const [payment, setPayment] = useState({ supplier: "", paymentDate: today, amount: "", method: "Transferencia", reference: "", note: "" });
-  const [expense, setExpense] = useState({ expenseDate: today, area: "Fábrica", category: "Servicios", concept: "", amount: "", notes: "" });
+  const [expense, setExpense] = useState({ expenseDate: today, area: "Fábrica", category: "Servicios", concept: "", amount: "", notes: "", employee: "", payrollPeriod: today.slice(0,7), paymentStatus: "Pendiente" });
   const [invoiceLines, setInvoiceLines] = useState<InvoiceLineDraft[]>([createInvoiceLine("excluded")]);
   const [purchaseBaseline, setPurchaseBaseline] = useState(() => JSON.stringify({ purchase, invoiceLines, isCreditNote }));
   const [discardPurchaseOpen, setDiscardPurchaseOpen] = useState(false);
@@ -2915,7 +2915,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
     category: row.category || "Otros",
     kind: row.category === "Servicios" ? "service" : "expense",
     concept: row.concept,
-    supplier: "Registro anterior",
+    supplier: row.employee || "Sin proveedor",
     invoice: row.notes || "Sin comprobante",
     amount: Number(row.amount),
   }));
@@ -2995,20 +2995,33 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
     loadCostData().catch((loadError) => setExpenseError(loadError instanceof Error ? loadError.message : "No se pudieron cargar los datos de costos."));
   }, []);
 
+  const isPayroll = ["Sueldos", "Cargas sociales", "Otros costos laborales"].includes(expense.category);
+  const [payingExpense, setPayingExpense] = useState<number | null>(null);
+  const openPayroll = () => { setTab("gastos"); setExpenseError(""); setExpense({...expense, category:"Sueldos", concept:"", amount:"", employee:"", notes:"", payrollPeriod:today.slice(0,7), paymentStatus:"Pendiente"}); setExpenseOpen(true); };
+  const payExpense = async (id: number) => {
+    setPayingExpense(id); setExpenseError("");
+    try {
+      const response = await fetch("/api/operations", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({action:"pay-expense", id})});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "No se pudo registrar el pago.");
+      setExpenseRows(rows => rows.map(row => row.id === id ? data.expense : row));
+    } catch (error) { setExpenseError(error instanceof Error ? error.message : "No se pudo registrar el pago."); }
+    finally { setPayingExpense(null); }
+  };
   const saveExpense = async () => {
-    const amount = Number(expense.amount.replace(/\D/g, ""));
-    if (!amount || !expense.concept.trim()) {
+    const amount = Number(expense.amount.replace(/\./g, "").replace(",", "."));
+    if (!Number.isFinite(amount) || amount <= 0 || (isPayroll ? !expense.employee.trim() || !expense.payrollPeriod : !expense.concept.trim())) {
       setExpenseError("Completá el concepto y un importe mayor a cero.");
       return;
     }
     setSavingExpense(true); setExpenseError("");
     try {
-      const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "register-expense", expense: { ...expense, amount } }) });
+      const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "register-expense", expense: { ...expense, amount, concept: isPayroll ? `${expense.category} · ${expense.employee.trim()} · ${expense.payrollPeriod}` : expense.concept } }) });
       const data = await response.json() as { error?: string };
       if (!response.ok) throw new Error(data.error ?? "No se pudo guardar el gasto.");
       await loadCostData();
       setExpenseOpen(false);
-      setExpense({ expenseDate: today, area: "Fábrica", category: "Servicios", concept: "", amount: "", notes: "" });
+      setExpense({ expenseDate: today, area: "Fábrica", category: "Servicios", concept: "", amount: "", notes: "", employee: "", payrollPeriod: today.slice(0,7), paymentStatus: "Pendiente" });
     } catch (saveError) {
       setExpenseError(saveError instanceof Error ? saveError.message : "No se pudo guardar el gasto.");
     } finally { setSavingExpense(false); }
@@ -3368,7 +3381,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
     <section className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div><Badge className="rounded-full bg-[#f4d5e1] text-[#983f62] hover:bg-[#f4d5e1]">Administración</Badge><h2 className="mt-3 text-3xl font-black tracking-tight">Costos y rentabilidad</h2><p className="mt-1 text-muted-foreground">Último costo pagado, gastos por centro y costo actualizado de cada sabor.</p></div>
-        <div className="flex flex-wrap gap-2"><Button onClick={() => openNewPurchase()} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Nueva factura</Button><Button onClick={() => openNewPurchase("material", true)} variant="outline" className="rounded-xl border-[#b64e77] text-[#a53d67]"><Plus /> Nueva nota de crédito</Button></div>
+        <div className="flex flex-wrap gap-2"><Button onClick={() => openNewPurchase()} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Nueva factura</Button><Button variant="outline" onClick={openPayroll}><Plus /> Cargar sueldo</Button><Button onClick={() => openNewPurchase("material", true)} variant="outline" className="rounded-xl border-[#b64e77] text-[#a53d67]"><Plus /> Nueva nota de crédito</Button></div>
       </div>
       <div className="flex gap-2 overflow-x-auto rounded-2xl border bg-white p-2 shadow-sm">
         {tabs.map(([id, label, Icon]) => <button key={id} onClick={() => setTab(id)} className={`flex shrink-0 items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold transition ${tab === id ? "bg-[#3b2931] text-white" : "text-muted-foreground hover:bg-[#fff1f6]"}`}><Icon className="size-4" />{label}</button>)}
@@ -3397,9 +3410,10 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
       </div>}
 
       {tab === "gastos" && <div className="space-y-5">
+        <div className="rounded-3xl border bg-white p-5"><h3 className="text-xl font-black">Sueldos registrados</h3><p className="text-sm text-muted-foreground">El pago actualiza el mismo costo del período trabajado.</p>{expenseRows.filter(row=>row.payrollPeriod).map(row=><div key={row.id} className="flex flex-wrap items-center justify-between gap-3 border-b py-3"><span>{row.employee} · {row.payrollPeriod} · {row.area}</span><b>{money(row.amount)}</b><span>{row.paymentStatus}</span>{row.paymentStatus === "Pendiente" && <Button variant="outline" disabled={payingExpense !== null} onClick={()=>payExpense(row.id)}>Marcar pagado</Button>}</div>)}</div>
         <div className="flex flex-col gap-4 rounded-3xl border bg-white p-6 shadow-sm lg:flex-row lg:items-center lg:justify-between">
           <div><Badge className="bg-[#f8dce7] text-[#a53d67]">Control integral</Badge><h3 className="mt-3 text-2xl font-black">Análisis de gastos</h3><p className="text-sm text-muted-foreground">Incluye materias primas, servicios y demás gastos cargados por factura, distribuidos según su destino.</p></div>
-          <Button onClick={() => openNewPurchase("service")} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Cargar nueva factura</Button>
+          <Button onClick={() => openNewPurchase("service")} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Cargar nueva factura</Button><Button variant="outline" onClick={openPayroll}><Plus /> Cargar sueldo</Button>
         </div>
         {expenseError && <div className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{expenseError}</div>}
         <div className="grid gap-3 rounded-3xl border bg-white p-5 shadow-sm md:grid-cols-2 xl:grid-cols-5">
@@ -3467,7 +3481,23 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
 
       <Dialog open={materialOpen} onOpenChange={(open) => { setMaterialOpen(open); if (!open) resetMaterialDraft(); }}><DialogContent className="sm:max-w-[650px]"><DialogHeader><DialogTitle>{editingMaterialName ? "Editar insumo o servicio" : "Nuevo insumo o servicio"}</DialogTitle><DialogDescription>Crealo una sola vez para reutilizarlo al cargar facturas. Solamente las materias primas estarán disponibles en las fórmulas.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold sm:col-span-2">Nombre<Input value={material.name} onChange={(e)=>setMaterial({...material,name:e.target.value})} placeholder={material.kind === "material" ? "Ej. Pasta de pistacho" : "Ej. Energía eléctrica"}/></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Tipo / categoría<select value={material.kind === "material" ? "material" : material.category} onChange={(e)=>{ const value=e.target.value; setMaterial({...material,kind:value==="material"?"material":value==="Servicios"?"service":"expense",category:value==="material"?"Materia prima":value,unit:value==="material"?"kg":"unidad",contentPerPackage:"1"}); }} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option value="material">Materia prima</option><option value="Packaging">Packaging</option><option value="Servicios">Servicio</option><option value="Sueldos">Sueldos</option><option value="Mantenimiento">Mantenimiento</option><option value="Logística">Logística</option><option value="Impuestos">Impuestos</option><option value="Alquileres">Alquileres</option><option value="Inversiones">Inversión</option><option value="Otros">Otros</option></select></label>{material.kind === "material" && <><label className="space-y-2 text-sm font-bold">Unidad de costo<select value={material.unit} onChange={(e)=>setMaterial({...material,unit:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option value="kg">Kilogramo</option><option value="unidad">Unidad</option></select></label><label className="space-y-2 text-sm font-bold">Contenido por envase<Input value={material.contentPerPackage} onChange={(e)=>setMaterial({...material,contentPerPackage:e.target.value})} inputMode="decimal" placeholder="Ej. 10"/><span className="block text-xs font-normal text-muted-foreground">Cuántos kg o unidades trae cada envase.</span></label></>}<label className="space-y-2 text-sm font-bold sm:col-span-2">IVA habitual<select value={material.vat} onChange={(e)=>setMaterial({...material,vat:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option value="21">21%</option><option value="10.5">10,5%</option><option value="0">0%</option></select></label></div>{materialError && <p className="text-sm font-bold text-red-600">{materialError}</p>}<DialogFooter><Button variant="outline" onClick={()=>{setMaterialOpen(false);resetMaterialDraft();}}>Cancelar</Button><Button disabled={savingMaterial} onClick={saveMaterial} className="bg-[#3b2931] text-white">{savingMaterial ? "Guardando…" : editingMaterialName ? "Guardar cambios" : "Guardar en catálogo"}</Button></DialogFooter></DialogContent></Dialog>
 
-      <Dialog open={expenseOpen} onOpenChange={setExpenseOpen}><DialogContent className="sm:max-w-[650px]"><DialogHeader><DialogTitle>Registrar gasto general</DialogTitle><DialogDescription>Este gasto se incorporará automáticamente al Estado de resultados del área seleccionada.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold">Fecha<Input type="date" value={expense.expenseDate} onChange={(e) => setExpense({...expense,expenseDate:e.target.value})}/></label><label className="space-y-2 text-sm font-bold">Área / centro de costo<select value={expense.area} onChange={(e) => setExpense({...expense,area:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal">{["Fábrica","Av. de Mayo","Centenario","Administración","Logística"].map(x=><option key={x}>{x}</option>)}</select></label><label className="space-y-2 text-sm font-bold">Categoría<select value={expense.category} onChange={(e)=>setExpense({...expense,category:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal">{expenseCategories.map(x=><option key={x}>{x}</option>)}</select></label><label className="space-y-2 text-sm font-bold">Importe<Input value={expense.amount} onChange={(e)=>setExpense({...expense,amount:e.target.value})} inputMode="numeric" placeholder="$ 0"/></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Concepto<Input value={expense.concept} onChange={(e)=>setExpense({...expense,concept:e.target.value})} placeholder="Ej. Factura de luz octubre"/></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Observaciones<Textarea value={expense.notes} onChange={(e)=>setExpense({...expense,notes:e.target.value})} placeholder="Proveedor, período o detalle adicional"/></label></div>{expenseError && <p className="text-sm font-bold text-red-600">{expenseError}</p>}<DialogFooter><Button variant="outline" onClick={()=>setExpenseOpen(false)}>Cancelar</Button><Button disabled={savingExpense} onClick={saveExpense} className="bg-[#3b2931] text-white">{savingExpense ? "Guardando…" : "Guardar gasto"}</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={expenseOpen} onOpenChange={setExpenseOpen}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[650px]"><DialogHeader><DialogTitle>{isPayroll ? "Registrar costo laboral" : "Registrar gasto general"}</DialogTitle><DialogDescription>{isPayroll ? "Sin proveedor ni factura. El costo se asigna al período trabajado; marcarlo pagado no genera otro gasto." : "Este gasto se incorporará automáticamente al Estado de resultados del área seleccionada."}</DialogDescription></DialogHeader>
+        <div className="grid gap-4 py-2 sm:grid-cols-2">
+          <label className="space-y-2 text-sm font-bold">Tipo de costo<select value={isPayroll ? "laboral" : "general"} onChange={e=>setExpense({...expense,category:e.target.value === "laboral" ? "Sueldos" : "Servicios"})} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option value="general">Gasto general</option><option value="laboral">Sueldos y costos laborales</option></select></label>
+          <label className="space-y-2 text-sm font-bold">Área / centro de costo<select value={expense.area} onChange={(e) => setExpense({...expense,area:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal">{["Fábrica","Av. de Mayo","Centenario","Administración","Logística"].map(x=><option key={x}>{x}</option>)}</select></label>
+          <label className="space-y-2 text-sm font-bold">Categoría<select value={expense.category} onChange={(e)=>setExpense({...expense,category:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal">{expenseCategories.filter(x=>isPayroll === ["Sueldos","Cargas sociales","Otros costos laborales"].includes(x)).map(x=><option key={x}>{x}</option>)}</select></label>
+          <label className="space-y-2 text-sm font-bold">Importe<Input value={expense.amount} onChange={(e)=>setExpense({...expense,amount:e.target.value})} inputMode="numeric" placeholder="$ 0"/></label>
+          {isPayroll ? <>
+            <label className="space-y-2 text-sm font-bold sm:col-span-2">Empleado o equipo<Input value={expense.employee} onChange={e=>setExpense({...expense,employee:e.target.value})} placeholder="Ej. Juan Pérez o Equipo de fábrica"/></label>
+            <label className="space-y-2 text-sm font-bold">Período trabajado<Input type="month" value={expense.payrollPeriod} onChange={e=>setExpense({...expense,payrollPeriod:e.target.value})}/></label>
+            <label className="space-y-2 text-sm font-bold">Estado de pago<select value={expense.paymentStatus} onChange={e=>setExpense({...expense,paymentStatus:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option>Pendiente</option><option>Pagado</option></select></label>
+          </> : <>
+            <label className="space-y-2 text-sm font-bold">Fecha<Input type="date" value={expense.expenseDate} onChange={(e) => setExpense({...expense,expenseDate:e.target.value})}/></label>
+            <label className="space-y-2 text-sm font-bold sm:col-span-2">Concepto<Input value={expense.concept} onChange={(e)=>setExpense({...expense,concept:e.target.value})} placeholder="Ej. Factura de luz octubre"/></label>
+          </>}
+          <label className="space-y-2 text-sm font-bold sm:col-span-2">Observaciones<Textarea value={expense.notes} onChange={(e)=>setExpense({...expense,notes:e.target.value})} placeholder="Detalle adicional"/></label>
+        </div>{expenseError && <p role="alert" className="text-sm font-bold text-red-600">{expenseError}</p>}<DialogFooter><Button variant="outline" onClick={()=>setExpenseOpen(false)}>Cancelar</Button><Button disabled={savingExpense} onClick={saveExpense} className="bg-[#3b2931] text-white">{savingExpense ? "Guardando…" : isPayroll ? "Guardar costo laboral" : "Guardar gasto"}</Button></DialogFooter></DialogContent></Dialog>
+
 
       <Dialog open={paymentOpen} onOpenChange={setPaymentOpen}><DialogContent className="sm:max-w-[620px]"><DialogHeader><DialogTitle>Registrar pago a proveedor</DialogTitle><DialogDescription>El importe se descuenta de la cuenta corriente del proveedor.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold">Proveedor<select value={payment.supplier} onChange={e=>setPayment({...payment,supplier:e.target.value})} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal">{suppliers.map(item=><option key={item.name}>{item.name}</option>)}</select></label><label className="space-y-2 text-sm font-bold">Fecha<Input type="date" value={payment.paymentDate} onChange={(e)=>setPayment({...payment,paymentDate:e.target.value})}/></label><label className="space-y-2 text-sm font-bold">Monto pagado<Input value={payment.amount} onChange={e=>setPayment({...payment,amount:e.target.value})} inputMode="numeric" placeholder="$ 0"/></label><label className="space-y-2 text-sm font-bold">Forma de pago<select value={payment.method} onChange={e=>setPayment({...payment,method:e.target.value})} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal">{["Transferencia","Efectivo","Echeq","Cheque de tercero","Mercadería"].map(item=><option key={item}>{item}</option>)}</select></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Referencia o comprobante<Input value={payment.reference} onChange={e=>setPayment({...payment,reference:e.target.value})} placeholder="N.º de transferencia, cheque o recibo"/></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Observaciones<Textarea value={payment.note} onChange={e=>setPayment({...payment,note:e.target.value})} placeholder="Ej. Pago parcial, vencimiento del echeq o detalle de la mercadería entregada"/></label></div><div className="rounded-2xl bg-[#f7f3f5] p-4 text-sm"><div className="flex justify-between"><span>Saldo actual del proveedor</span><b>{money(suppliers.find(item=>item.name===payment.supplier)?.debt ?? 0)}</b></div><div className="mt-2 flex justify-between border-t pt-2"><span>Saldo después del pago</span><b>{money((suppliers.find(item=>item.name===payment.supplier)?.debt ?? 0) - (Number(payment.amount.replace(/\D/g,"")) || 0))}</b></div></div>{paymentError && <p className="text-sm font-bold text-red-600">{paymentError}</p>}<DialogFooter><Button variant="outline" onClick={()=>setPaymentOpen(false)}>Cancelar</Button><Button disabled={savingPayment} onClick={savePayment} className="bg-[#3b2931] text-white">{savingPayment ? "Guardando…" : "Registrar pago"}</Button></DialogFooter></DialogContent></Dialog>
 
