@@ -42,6 +42,7 @@ await assert.rejects(()=>save(2,[{materialId:1,quantityKg:1}]),/permiso/);
 console.log('Read-only roles rejected');
 await db.exec(`set test.role='administracion';`);
 await db.exec(fs.readFileSync(new URL('../supabase/migrations/20261027201834_named_recipes.sql',import.meta.url),'utf8'));
+await db.exec(fs.readFileSync(new URL('../supabase/migrations/20261105143021_recipe_waste_yield.sql',import.meta.url),'utf8'));
 const saveNamed=async(id,product,name,items)=>(await db.query('select * from save_named_recipe($1,$2,$3,$4::jsonb)',[id,product,name,JSON.stringify(items)])).rows[0];
 const standalone=await saveNamed(null,null,'Base sin maestro',[{materialId:1,quantityKg:1}]);
 assert.equal(standalone.product_id,null);
@@ -51,5 +52,8 @@ const edited=await saveNamed(standalone.id,null,'Base editada',[{materialId:2,qu
 await assert.rejects(()=>saveNamed(standalone.id,null,'Ciclo',[{recipeId:derived.id,quantityKg:1}]),/círculo/);
 await assert.rejects(()=>saveNamed(null,1,'Duplicada',[{materialId:1,quantityKg:1}]),/ya tiene una fórmula/);
 assert.equal((await db.query('select count(*)::int as count from recipes where id=$1',[standalone.id])).rows[0].count,1);
+const lemonJuice=await saveNamed(null,null,'Jugo de limón',[{materialId:1,quantityKg:1.5}]);
+assert.equal((await db.query('select quantity_kg::float as quantity_kg from recipe_items where recipe_id=$1',[lemonJuice.id])).rows[0].quantity_kg,1.5);
+await assert.rejects(()=>saveNamed(lemonJuice.id,null,'Jugo inválido',[{materialId:1,quantityKg:.9}]),/al menos 1,0000 kg/);
 console.log('Standalone bases and derived formulas save, reopen and edit by ID without master products');
 await db.close();

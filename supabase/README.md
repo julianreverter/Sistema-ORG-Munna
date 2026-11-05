@@ -66,3 +66,7 @@ El código admite desplegar antes de ejecutar la migración: mantiene la carga d
 ## Fórmulas sin producto maestro
 
 La migración `20261027201834_named_recipes.sql` permite dejar `recipes.product_id` vacío y agrega `save_named_recipe`. La edición identifica la fórmula por su ID para conservar sus vínculos. El nombre es obligatorio; la asociación al maestro es opcional. Cada ingrediente permite elegir primero Materia prima o Producto; Producto muestra las fórmulas guardadas, tengan o no maestro. Se mantienen la validación de 1 kg y el bloqueo de ciclos. La migración anterior y su función siguen disponibles para compatibilidad.
+
+## Rendimiento y desperdicio en costeo
+
+Aplicar `20261105143021_recipe_waste_yield.sql` antes de desplegar la interfaz correspondiente. La fórmula continúa representando 1 kg final, pero puede consumir más de 1 kg de materias primas o fórmulas base. La diferencia se informa como desperdicio y todo el insumo consumido integra el costo del kg final. No modifica compras ni registra movimientos de stock. Las fórmulas existentes de 1 kg siguen siendo válidas sin cambios.

@@ -50,7 +50,7 @@ test('canonical current material price feeds every linked formula',()=>{
   assert.equal(result.perKg,5000);
   assert.equal(result.items[0].recipeId,1);
 });
-const save=(api,items)=>api.POST(new Request('http://test/api/operations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'save-recipe',recipe:{productCode:'GR',name:'Granizado',items}})}));
+const save=(api,items,hasWaste=false)=>api.POST(new Request('http://test/api/operations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'save-recipe',recipe:{productCode:'GR',name:'Granizado',hasWaste,items}})}));
 test('saving uses one atomic database operation and retains formula IDs',async()=>{
   const api=fixture(); const items=[{recipeId:1,quantityKg:.9},{materialId:2,quantityKg:.1}];
   const response=await save(api,items);assert.equal(response.status,201);
@@ -60,6 +60,24 @@ test('saving uses one atomic database operation and retains formula IDs',async()
 test('invalid quantities, duplicate ingredients and ambiguous types never write',async()=>{
   for(const items of [[{recipeId:1,quantityKg:.9}],[{recipeId:1,quantityKg:.9},{recipeId:1,quantityKg:.1}],[{recipeId:1,materialId:2,quantityKg:1}],[{materialId:2,quantityKg:-1}],[{materialId:2,quantityKg:'oops'}]]){
     const api=fixture();assert.equal((await save(api,items)).status,400);assert.equal(api.writes.length,0);
+  }
+});
+test('waste formulas consume more than one kilogram and charge every input kilogram',async()=>{
+  const api=fixture();
+  const response=await save(api,[{materialId:2,quantityKg:1.5}],true);
+  assert.equal(response.status,201);
+  assert.equal(api.writes[0].args.p_items[0].quantityKg,1.5);
+  const {recipeCalculator}=fixture();
+  const lemon={...material(2,2000),quantity_kg:1.5};
+  const result=recipeCalculator([recipe(1,[lemon])],[])(1);
+  assert.equal(result.perKg,3000);
+  assert.equal(result.items[0].quantityKg,1.5);
+});
+test('normal formulas remain exactly one kilogram and waste mode requires a real loss',async()=>{
+  for (const [items,hasWaste] of [[[{materialId:2,quantityKg:1.5}],false],[[{materialId:2,quantityKg:1}],true],[[{materialId:2,quantityKg:.9}],true]]) {
+    const api=fixture();
+    assert.equal((await save(api,items,hasWaste)).status,400);
+    assert.equal(api.writes.length,0);
   }
 });
 test('read-only roles cannot save and database cycle errors reach the form',async()=>{

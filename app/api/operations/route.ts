@@ -446,6 +446,8 @@ export async function GET() {
     const formulaRows = (recipesResult.data ?? []).map((r: Row) => {
       const product = one(r.products) as Row | null;
       const { items: normalizedItems, perKg: costPerKg } = calculateRecipe(n(r.id));
+      const inputQuantityKg = normalizedItems.reduce((sum: number, item: Row) => sum + n(item.quantityKg), 0);
+      const wasteKg = Math.max(0, inputQuantityKg - 1);
       return {
         id: r.id,
         productCode: product?.code ?? "",
@@ -456,6 +458,10 @@ export async function GET() {
         ingredients: normalizedItems.length,
         recipe: costPerKg,
         perKg: costPerKg,
+        inputQuantityKg,
+        wasteKg,
+        yieldPercent: inputQuantityKg > 0 ? 100 / inputQuantityKg : 0,
+        hasWaste: Math.round(inputQuantityKg * 10000) > 10000,
         packageWeightKg: n(product?.tare_kg),
         presentationCost: n(product?.tare_kg) > 0 ? costPerKg * n(product?.tare_kg) : null,
         updated: new Date(r.updated_at ?? r.created_at).toLocaleDateString("es-AR"),
@@ -862,10 +868,12 @@ export async function POST(request: Request) {
       const items = Array.isArray(recipe?.items) ? recipe.items as Row[] : [];
       const totalQuantityKg = items.reduce((sum, item) => sum + n(item.quantityKg), 0);
       const totalInTenThousandths = Math.round(totalQuantityKg * 10000);
+      const hasWaste = recipe?.hasWaste === true;
       if (!name || !items.length) return Response.json({ error: "Completá el nombre y agregá al menos un ingrediente." }, { status: 400 });
       if (items.some((item) => !Number.isFinite(n(item.quantityKg)) || n(item.quantityKg) <= 0 || (n(item.materialId) > 0) === (n(item.recipeId) > 0))) return Response.json({ error: "Elegí una materia prima o una fórmula por renglón, con una cantidad mayor a cero." }, { status: 400 });
       if (new Set(items.map((item) => n(item.recipeId) > 0 ? "recipe:" + n(item.recipeId) : "material:" + n(item.materialId))).size !== items.length) return Response.json({ error: "No repitas el mismo ingrediente en una fórmula." }, { status: 400 });
-      if (totalInTenThousandths !== 10000) return Response.json({ error: `La fórmula debe sumar exactamente 1,0000 kg. Actualmente suma ${totalQuantityKg.toLocaleString("es-AR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} kg.` }, { status: 400 });
+      if (!hasWaste && totalInTenThousandths !== 10000) return Response.json({ error: `La fórmula debe sumar exactamente 1,0000 kg. Actualmente suma ${totalQuantityKg.toLocaleString("es-AR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} kg.` }, { status: 400 });
+      if (hasWaste && totalInTenThousandths <= 10000) return Response.json({ error: "Una fórmula con desperdicio debe usar más de 1,0000 kg de ingredientes para obtener 1 kg final." }, { status: 400 });
 
       let product: Row | null = null;
       if (productCode) {
