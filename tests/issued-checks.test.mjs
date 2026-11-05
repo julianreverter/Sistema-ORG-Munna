@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import ts from 'typescript';
 const context = { exports: {} };
 vm.runInNewContext(ts.transpileModule(fs.readFileSync('lib/issued-checks.ts', 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, context);
-const { checkAmount, validCheckDate, checkInputError, summarizeChecks, weeklyChecks } = context.exports;
+const { checkAmount, validCheckDate, checkInputError, summarizeChecks, weeklyChecks, checkCalendarDays, offsetCheckMonth } = context.exports;
 const draft = { number: '001', bank: 'Banco', beneficiary: 'Proveedor', amount: '1.234,56', issued_on: '2026-08-01', due_on: '2026-09-01', status: 'pending', debited_on: null, notes: '' };
 
 test('money retains cents and rejects malformed and nonpositive values', () => {
@@ -73,4 +73,18 @@ test('late deposits remain pending across months and cancellation never contribu
   assert.equal(oct.previous, 150.15);
   assert.equal(oct.totalPending, 550.15);
   assert.equal(summarizeChecks(rows, '2026-08').issued, 750.35);
+});
+
+test('check calendar uses Monday-first complete weeks and navigates across years', () => {
+  const december = checkCalendarDays('2026-12');
+  assert.equal(december.length, 42);
+  assert.equal(december[0].day, '2026-11-30');
+  assert.equal(december[0].inMonth, false);
+  assert.equal(december[1].day, '2026-12-01');
+  assert.equal(december[1].inMonth, true);
+  assert.equal(december[41].day, '2027-01-10');
+  assert.equal(december[41].inMonth, false);
+  assert.equal(offsetCheckMonth('2026-12', 1), '2027-01');
+  assert.equal(offsetCheckMonth('2026-01', -1), '2025-12');
+  assert.equal(checkCalendarDays('2026-13').length, 0);
 });

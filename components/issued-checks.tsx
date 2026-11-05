@@ -1,14 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CalendarClock, Plus, RefreshCw } from "lucide-react";
+import { CalendarClock, ChevronLeft, ChevronRight, Plus, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { argentinaDay, checkInputError, summarizeChecks, weeklyChecks, type IssuedCheck } from "@/lib/issued-checks";
+import { argentinaDay, checkCalendarDays, checkInputError, offsetCheckMonth, summarizeChecks, weeklyChecks, type IssuedCheck } from "@/lib/issued-checks";
 
 const money = (amount: number) => amount.toLocaleString("es-AR", { style: "currency", currency: "ARS" });
 const date = (day: string | null) => day ? day.split("-").reverse().join("/") : "—";
@@ -23,6 +23,67 @@ async function fetchChecks(): Promise<IssuedCheck[]> {
   return data.checks;
 }
 
+const monthTitle = (month: string) => {
+  const [year, monthNumber] = month.split("-").map(Number);
+  const label = new Intl.DateTimeFormat("es-AR", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(Date.UTC(year, monthNumber - 1, 1)));
+  return label.charAt(0).toUpperCase() + label.slice(1);
+};
+
+function CheckCalendar({ rows, month, today, selectedDay, onMonthChange, onSelectDay, onNewCheck }: {
+  rows: IssuedCheck[]; month: string; today: string; selectedDay: string | null;
+  onMonthChange: (month: string) => void; onSelectDay: (day: string) => void; onNewCheck: (day: string) => void;
+}) {
+  const days = checkCalendarDays(month);
+  const checksByDay = rows.reduce<Record<string, IssuedCheck[]>>((byDay, row) => {
+    if (row.status !== "cancelled") (byDay[row.due_on] ??= []).push(row);
+    return byDay;
+  }, {});
+  const selectedChecks = selectedDay ? checksByDay[selectedDay] ?? [] : [];
+  const selectedTotal = selectedChecks.reduce((sum, row) => sum + Number(row.amount), 0);
+
+  return <div className="overflow-hidden rounded-2xl border bg-white shadow-sm">
+    <div className="grid lg:grid-cols-[minmax(0,1fr)_280px]">
+      <div className="p-4 sm:p-5">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div><h2 className="font-black">Calendario de vencimientos</h2><p className="text-xs text-muted-foreground">Elegí un día para ver el detalle o cargar el próximo cheque.</p></div>
+          <div className="flex items-center gap-1">
+            <Button type="button" size="icon" variant="ghost" aria-label="Mes anterior" onClick={() => onMonthChange(offsetCheckMonth(month, -1))}><ChevronLeft className="size-5"/></Button>
+            <span className="min-w-36 text-center text-sm font-black sm:min-w-44">{monthTitle(month)}</span>
+            <Button type="button" size="icon" variant="ghost" aria-label="Mes siguiente" onClick={() => onMonthChange(offsetCheckMonth(month, 1))}><ChevronRight className="size-5"/></Button>
+          </div>
+        </div>
+        <div className="grid grid-cols-7 text-center text-xs font-bold text-muted-foreground">{["L", "M", "X", "J", "V", "S", "D"].map((label, index) => <span key={`${label}-${index}`} className="py-2">{label}</span>)}</div>
+        <div className="grid grid-cols-7 gap-1">
+          {days.map(({ day, inMonth }) => {
+            const dayChecks = checksByDay[day] ?? [];
+            const pending = dayChecks.filter(row => row.status === "pending").length;
+            const debited = dayChecks.filter(row => row.status === "debited").length;
+            const isSelected = selectedDay === day;
+            const isToday = today === day;
+            return <button key={day} type="button" onClick={() => { if (!inMonth) onMonthChange(day.slice(0, 7)); onSelectDay(day); }}
+              aria-label={`${date(day)}${dayChecks.length ? `, ${dayChecks.length} cheque${dayChecks.length === 1 ? "" : "s"}` : ", sin cheques"}`}
+              className={`relative min-h-14 rounded-xl border p-1 text-sm transition hover:border-[#c77c9b] hover:bg-[#fff7fa] sm:min-h-16 ${inMonth ? "text-foreground" : "border-transparent text-muted-foreground/50"} ${isSelected ? "border-[#8f3158] bg-[#fff0f6] ring-2 ring-[#e8b3c9]" : "border-transparent"} ${isToday ? "font-black" : ""}`}>
+              <span className={`mx-auto flex size-7 items-center justify-center rounded-full ${isToday ? "bg-[#3b2931] text-white" : ""}`}>{Number(day.slice(-2))}</span>
+              {dayChecks.length > 0 && <span className="mt-1 flex items-center justify-center gap-1" aria-hidden="true">
+                {pending > 0 && <span className="rounded-full bg-[#8f3158] px-1.5 text-[10px] font-black leading-4 text-white">{pending}</span>}
+                {debited > 0 && <span className="rounded-full bg-emerald-600 px-1.5 text-[10px] font-black leading-4 text-white">{debited}</span>}
+              </span>}
+            </button>;
+          })}
+        </div>
+        <div className="mt-4 flex flex-wrap gap-4 text-xs text-muted-foreground"><span className="flex items-center gap-1.5"><i className="size-2.5 rounded-full bg-[#8f3158]"/>Pendiente</span><span className="flex items-center gap-1.5"><i className="size-2.5 rounded-full bg-emerald-600"/>Debitado</span><span>El número indica cuántos cheques caen ese día.</span></div>
+      </div>
+      <aside className="border-t bg-[#fff9fb] p-5 lg:border-l lg:border-t-0">
+        {selectedDay ? <div className="space-y-4">
+          <div><p className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Día seleccionado</p><p className="mt-1 text-xl font-black">{date(selectedDay)}</p></div>
+          {selectedChecks.length ? <><div><p className="text-sm text-muted-foreground">{selectedChecks.length} cheque{selectedChecks.length === 1 ? "" : "s"}</p><p className="text-2xl font-black">{money(selectedTotal)}</p></div><div className="max-h-40 space-y-2 overflow-y-auto">{selectedChecks.map(row => <div key={row.id} className="rounded-xl border bg-white p-3 text-sm"><div className="flex justify-between gap-2"><b className="truncate">{row.beneficiary}</b><span className={`size-2.5 shrink-0 rounded-full ${row.status === "pending" ? "bg-[#8f3158]" : "bg-emerald-600"}`}/></div><p className="mt-1 text-xs text-muted-foreground">{row.number} · {money(Number(row.amount))}</p></div>)}</div></> : <p className="rounded-xl border border-dashed bg-white p-4 text-sm text-muted-foreground">No hay cheques con vencimiento este día.</p>}
+          {selectedDay >= today && <Button type="button" className="w-full bg-[#3b2931] text-white" onClick={() => onNewCheck(selectedDay)}><Plus className="size-4"/>Nuevo cheque para este día</Button>}
+        </div> : <div className="flex h-full min-h-44 flex-col items-center justify-center text-center text-sm text-muted-foreground"><CalendarClock className="mb-3 size-8"/><p>Seleccioná un día para consultar los vencimientos.</p></div>}
+      </aside>
+    </div>
+  </div>;
+}
+
 export function IssuedChecks() {
   const [rows, setRows] = useState<IssuedCheck[]>([]);
   const [loading, setLoading] = useState(true);
@@ -35,6 +96,7 @@ export function IssuedChecks() {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [selectedDay, setSelectedDay] = useState<string | null>(null);
 
   async function load() {
     setLoading(true); setError("");
@@ -100,8 +162,17 @@ export function IssuedChecks() {
         </div>
       </div>
     </div>}
+    {loaded && <CheckCalendar
+      rows={rows}
+      month={month}
+      today={today}
+      selectedDay={selectedDay}
+      onMonthChange={next => { setMonth(next); setSelectedDay(null); }}
+      onSelectDay={setSelectedDay}
+      onNewCheck={day => { setFormError(""); setDraft({ ...newDraft(), due_on: day }); }}
+    />}
     <div className="flex flex-wrap items-end gap-4 rounded-2xl border bg-white p-4">
-      <label className="space-y-1 text-sm font-bold">Mes<Input type="month" value={month} onChange={event => { if (/^\d{4}-\d{2}$/.test(event.target.value)) setMonth(event.target.value); }}/></label>
+      <label className="space-y-1 text-sm font-bold">Mes<Input type="month" value={month} onChange={event => { if (/^\d{4}-\d{2}$/.test(event.target.value)) { setMonth(event.target.value); setSelectedDay(null); } }}/></label>
       <p className="max-w-xl text-sm text-muted-foreground">Resumen del mes seleccionado. El destacado semanal siempre muestra la semana actual.</p>
     </div>
     {error && <div role="alert" className="rounded-xl bg-red-50 p-4 text-sm text-red-700">{error} <button className="font-bold underline" onClick={() => void load()}>Reintentar</button></div>}

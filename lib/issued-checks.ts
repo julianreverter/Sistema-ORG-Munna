@@ -8,6 +8,30 @@ export const argentinaDay = () => new Intl.DateTimeFormat("en-CA", {
   timeZone: "America/Argentina/Buenos_Aires", year: "numeric", month: "2-digit", day: "2-digit",
 }).format(new Date());
 
+export function checkCalendarDays(month: string) {
+  if (!/^\d{4}-\d{2}$/.test(month)) return [];
+  const [year, monthNumber] = month.split("-").map(Number);
+  if (monthNumber < 1 || monthNumber > 12) return [];
+  const first = new Date(Date.UTC(year, monthNumber - 1, 1));
+  const mondayOffset = (first.getUTCDay() + 6) % 7;
+  const start = new Date(first);
+  start.setUTCDate(first.getUTCDate() - mondayOffset);
+  return Array.from({ length: 42 }, (_, index) => {
+    const current = new Date(start);
+    current.setUTCDate(start.getUTCDate() + index);
+    const day = current.toISOString().slice(0, 10);
+    return { day, inMonth: day.startsWith(month) };
+  });
+}
+
+export function offsetCheckMonth(month: string, offset: number) {
+  if (!/^\d{4}-\d{2}$/.test(month)) return month;
+  const [year, monthNumber] = month.split("-").map(Number);
+  if (monthNumber < 1 || monthNumber > 12 || !Number.isInteger(offset)) return month;
+  const result = new Date(Date.UTC(year, monthNumber - 1 + offset, 1));
+  return result.toISOString().slice(0, 7);
+}
+
 export function validCheckDate(value: unknown): value is string {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)
     && Number(value.slice(0, 4)) >= 1900
