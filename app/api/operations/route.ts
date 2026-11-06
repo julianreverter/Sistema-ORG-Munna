@@ -30,7 +30,7 @@ const payrollMeta = (notes: unknown) => {
 const expenseView = (r: Row) => {
   const meta = payrollMeta(r.notes);
   const labels: Record<string,string> = {servicios:"Servicios",alquileres:"Alquileres",sueldos:"Sueldos",mantenimiento:"Mantenimiento",inversiones:"Inversiones",otros:"Otros"};
-  return {...r, expenseDate:r.expense_date, amount:Number(r.amount), category:labels[r.category] ?? "Otros", notes:meta ? meta.notes : r.notes, employee:meta?.employee, payrollPeriod:meta?.period, paymentStatus:meta?.status};
+  return {...r, expenseDate:r.expense_date, amount:Number(r.amount), category:labels[r.category] ?? String(r.category ?? "Otros"), notes:meta ? meta.notes : r.notes, employee:meta?.employee, payrollPeriod:meta?.period, paymentStatus:meta?.status};
 };
 
 const one = <T,>(value: T | T[] | null): T | null => Array.isArray(value) ? (value[0] ?? null) : value;
@@ -83,7 +83,7 @@ const decodePurchaseAllocations = (value: unknown): Row[] => decodePurchaseMeta(
 const expenseCategory = (value: unknown) => {
   const normalized = String(value ?? "Otros").trim().toLocaleLowerCase("es-AR");
   const allowed: Record<string, string> = { packaging: "Packaging", servicios: "Servicios", alquileres: "Alquileres", sueldos: "Sueldos", mantenimiento: "Mantenimiento", inversiones: "Inversiones", logística: "Logística", logistica: "Logística", impuestos: "Impuestos", otros: "Otros" };
-  return allowed[normalized] ?? "Otros";
+  return allowed[normalized] ?? (String(value ?? "").trim() || "Otros");
 };
 
 // Formula links remain live: costs are resolved from current ingredients on each read.
@@ -305,6 +305,8 @@ export async function GET() {
     const firstError = [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, recipesResult, productsResult, clientsResult, productFamiliesResult].find((r) => r.error)?.error;
     if (firstError) throw firstError;
 
+    const categoriesResult = await supabase.from("expense_categories").select("key,name").order("name");
+    if (categoriesResult.error) throw categoriesResult.error;
     const allUnits = (unitsResult.data ?? []).map(productionRow);
     const allDispatches = (dispatchResult.data ?? []).map(dispatchRow);
     const productFamilyRows = (productFamiliesResult.data ?? []).map(productFamilyRow);
@@ -484,6 +486,7 @@ export async function GET() {
       remittances: profile.role === "maestro_heladero" ? [] : allDispatches.slice(0, 500),
       customerPayments: canSeeFinancials ? (customerPaymentsResult.data ?? []).map((r: Row) => ({ ...r, clientId: r.client_id, clientName: one(r.clients)?.name, paymentDate: r.payment_date, createdAt: r.created_at })) : [],
       customerAdjustments: canSeeFinancials ? (adjustmentsResult.data ?? []).map((r: Row) => ({ ...r, clientId: r.client_id, clientName: one(r.clients)?.name, movementDate: r.movement_date, movementType: r.movement_type, signedAmount: n(r.signed_amount), createdAt: r.created_at })) : [],
+      expenseCategories: canSeeFinancials ? categoriesResult.data : [],
       operatingExpenses: canSeeFinancials ? (expensesResult.data ?? []).map((r: Row) => {
         const labels: Record<string, string> = { servicios: "Servicios", alquileres: "Alquileres", sueldos: "Sueldos", mantenimiento: "Mantenimiento", inversiones: "Inversiones", otros: "Otros" };
         return { ...expenseView(r), createdAt: r.created_at };
@@ -545,8 +548,20 @@ export async function POST(request: Request) {
   try {
     const { user, profile, supabase } = await context();
     const payload = await request.json() as Row;
-    const financial = ["register-customer-return","register-credit-note", "register-purchase", "update-purchase", "delete-purchase", "mark-purchase-paid", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "update-supplier", "archive-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "save-client", "save-product-family", "archive-product-family", "register-customer-payment", "register-customer-adjustment", "register-expense", "pay-expense", "register-local-sale", "save-staff"];
+    const financial = ["save-expense-category","register-customer-return","register-credit-note", "register-purchase", "update-purchase", "delete-purchase", "mark-purchase-paid", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "update-supplier", "archive-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "save-client", "save-product-family", "archive-product-family", "register-customer-payment", "register-customer-adjustment", "register-expense", "pay-expense", "register-local-sale", "save-staff"];
     if (financial.includes(String(payload.action)) && profile.role !== "administracion") return Response.json({ error: "No tenés permiso para esta operación." }, { status: 403 });
+
+    if (payload.action === "save-expense-category") {
+      const name = String(payload.name ?? "").trim().replace(/\s+/g, " ");
+      const key = payload.key ? String(payload.key).trim() : expenseCategory(name);
+      if (!name || name.length > 80 || !key || key.length > 80 || ["material", "Materia prima"].includes(key) || name.toLocaleLowerCase("es-AR") === "materia prima") return Response.json({error:"Ingresá un nombre de hasta 80 caracteres distinto de Materia prima."},{status:400});
+      const result = payload.key
+        ? await supabase.from("expense_categories").update({name}).eq("key",key).select().maybeSingle()
+        : await supabase.from("expense_categories").insert({key,name}).select().single();
+      if (result.error) throw result.error;
+      if (!result.data) return Response.json({error:"La categoría ya no existe."},{status:404});
+      return Response.json({category:result.data});
+    }
 
     if (payload.action === "remove-stock") {
       const code = String(payload.uniqueCode ?? "").trim();
@@ -895,7 +910,7 @@ export async function POST(request: Request) {
           if (createdProduct.error) throw createdProduct.error;
           product = createdProduct.data;
         }
-  
+
       }
       const saved = await supabase.rpc("save_named_recipe", { p_recipe_id: recipe.id == null ? null : n(recipe.id), p_product_id: product?.id ?? null, p_name: name, p_items: items });
       if (saved.error) return Response.json({ error: saved.error.message }, { status: 400 });
@@ -1201,7 +1216,7 @@ export async function POST(request: Request) {
           date = `${entry.payrollPeriod}-01`;
           notes = PAYROLL_PREFIX+JSON.stringify({employee:String(entry.employee).trim(),period:entry.payrollPeriod,status:entry.paymentStatus,notes:entry.notes || ""});
         } else if (String(notes ?? "").startsWith(PAYROLL_PREFIX)) return Response.json({error:"Observaciones inválidas."},{status:400});
-        const result = await supabase.from("operating_expenses").insert({ expense_date: date, area: String(entry.area), category: allowed.includes(category) ? category : "otros", concept: String(entry.concept), amount: Number(entry.amount), notes, created_by: user.id }).select().single();
+        const result = await supabase.from("operating_expenses").insert({ expense_date: date, area: String(entry.area), category: allowed.includes(category) ? category : expenseCategory(entry.category), concept: String(entry.concept), amount: Number(entry.amount), notes, created_by: user.id }).select().single();
         if (result.error) throw result.error; return Response.json({ expense: expenseView(result.data) }, { status: 201 });
       }
       const result = await supabase.from("local_sales").insert({ sale_date: entry.saleDate || today(), area: String(entry.area), concept: String(entry.concept), amount: Math.abs(n(entry.amount)), notes: entry.notes || null, created_by: user.id }).select().single();
