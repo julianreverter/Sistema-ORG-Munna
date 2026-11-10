@@ -29,7 +29,7 @@ const payrollMeta = (notes: unknown) => {
 };
 const expenseView = (r: Row) => {
   const meta = payrollMeta(r.notes);
-  const labels: Record<string,string> = {servicios:"Servicios",alquileres:"Alquileres",sueldos:"Sueldos",mantenimiento:"Mantenimiento",inversiones:"Inversiones",otros:"Otros"};
+  const labels: Record<string,string> = {servicios:"Servicios",alquileres:"Alquileres",sueldos:"Sueldos",mantenimiento:"Mantenimiento",administración:"Administración",administracion:"Administración",logística:"Logística",logistica:"Logística",impuestos:"Impuestos",inversiones:"Inversiones",otros:"Otros"};
   return {...r, expenseDate:r.expense_date, amount:Number(r.amount), category:labels[r.category] ?? String(r.category ?? "Otros"), notes:meta ? meta.notes : r.notes, employee:meta?.employee, payrollPeriod:meta?.period, paymentStatus:meta?.status};
 };
 
@@ -37,6 +37,7 @@ const one = <T,>(value: T | T[] | null): T | null => Array.isArray(value) ? (val
 const n = (value: unknown) => Number(value ?? 0);
 const today = () => new Date().toISOString().slice(0, 10);
 const roundCurrency = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+const COST_DESTINATIONS = new Set(["Fábrica", "Av. de Mayo"]);
 const parseInvoiceMoney = (value: unknown) => {
   const cleaned = String(value ?? "").replace(/[^0-9,.-]/g, "");
   if (!cleaned) return 0;
@@ -82,7 +83,7 @@ const decodePurchaseMeta = (value: unknown): { allocations: Row[]; dueDate: stri
 const decodePurchaseAllocations = (value: unknown): Row[] => decodePurchaseMeta(value).allocations;
 const expenseCategory = (value: unknown) => {
   const normalized = String(value ?? "Otros").trim().toLocaleLowerCase("es-AR");
-  const allowed: Record<string, string> = { packaging: "Packaging", servicios: "Servicios", alquileres: "Alquileres", sueldos: "Sueldos", mantenimiento: "Mantenimiento", inversiones: "Inversiones", logística: "Logística", logistica: "Logística", impuestos: "Impuestos", otros: "Otros" };
+  const allowed: Record<string, string> = { packaging: "Packaging", servicios: "Servicios", alquileres: "Alquileres", sueldos: "Sueldos", mantenimiento: "Mantenimiento", administración: "Administración", administracion: "Administración", inversiones: "Inversiones", logística: "Logística", logistica: "Logística", impuestos: "Impuestos", otros: "Otros" };
   return allowed[normalized] ?? (String(value ?? "").trim() || "Otros");
 };
 
@@ -1084,6 +1085,7 @@ export async function POST(request: Request) {
         const category = kind === "material" ? "Materia prima" : expenseCategory(line.category);
         const center = String(line.center ?? "Fábrica").trim() || "Fábrica";
         if (!productName) return Response.json({ error: "Todos los renglones deben tener un producto o concepto." }, { status: 400 });
+        if (!COST_DESTINATIONS.has(center)) return Response.json({ error: "El destino debe ser Fábrica o Av. de Mayo. Administración y Logística son categorías, no destinos." }, { status: 400 });
 
         // Reuse the selected catalog profile for materials, services and expenses.
         const profileResult = await supabase.from("purchased_products").select("*").eq("master_name", productName).eq("active", true).order("last_purchase_at", { ascending: false, nullsFirst: false }).order("id", { ascending: true }).limit(1);
@@ -1206,9 +1208,9 @@ export async function POST(request: Request) {
     if (payload.action === "register-expense" || payload.action === "register-local-sale") {
       const entry = (payload.expense ?? payload.sale) as Row;
       if (payload.action === "register-expense") {
-        const allowed = ["servicios","alquileres","sueldos","mantenimiento","inversiones","otros"];
+        const allowed = ["servicios","alquileres","sueldos","mantenimiento","administración","administracion","logística","logistica","impuestos","inversiones","otros"];
         const category = String(entry.category ?? "otros").toLowerCase();
-        if (!entry.area || !String(entry.concept ?? "").trim() || !Number.isFinite(Number(entry.amount)) || Number(entry.amount) <= 0) return Response.json({error:"Completá área, concepto e importe positivo."},{status:400});
+        if (!COST_DESTINATIONS.has(String(entry.area)) || !String(entry.concept ?? "").trim() || !Number.isFinite(Number(entry.amount)) || Number(entry.amount) <= 0) return Response.json({error:"Elegí Fábrica o Av. de Mayo y completá concepto e importe positivo."},{status:400});
         let notes = entry.notes || null;
         let date = entry.expenseDate || today();
         if (category === "sueldos") {
@@ -1219,6 +1221,7 @@ export async function POST(request: Request) {
         const result = await supabase.from("operating_expenses").insert({ expense_date: date, area: String(entry.area), category: allowed.includes(category) ? category : expenseCategory(entry.category), concept: String(entry.concept), amount: Number(entry.amount), notes, created_by: user.id }).select().single();
         if (result.error) throw result.error; return Response.json({ expense: expenseView(result.data) }, { status: 201 });
       }
+      if (!COST_DESTINATIONS.has(String(entry.area))) return Response.json({ error: "El destino debe ser Fábrica o Av. de Mayo." }, { status: 400 });
       const result = await supabase.from("local_sales").insert({ sale_date: entry.saleDate || today(), area: String(entry.area), concept: String(entry.concept), amount: Math.abs(n(entry.amount)), notes: entry.notes || null, created_by: user.id }).select().single();
       if (result.error) throw result.error; return Response.json({ sale: result.data }, { status: 201 });
     }
