@@ -1262,12 +1262,13 @@ function discountFor(client: Client, family: string, productFamilies: ProductFam
 }
 
 function Dispatch({ clients, productFamilies, availableUnits, onConfirm }: { clients: Client[]; productFamilies: ProductFamilyDefinition[]; availableUnits: ProductionRecord[]; onConfirm: (codes: string[], client: Client) => Promise<void> }) {
-  const [clientId, setClientId] = useState(clients[0]?.id ?? 0);
+  const [clientId, setClientId] = useState("");
   const [scanValue, setScanValue] = useState("");
   const [lines, setLines] = useState<ProductionRecord[]>([]);
   const [message, setMessage] = useState<{ type: "ok" | "error"; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
-  const selectedClient = clients.find((client) => client.id === clientId) ?? clients[0];
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const selectedClient = clients.find((client) => client.active && String(client.id) === clientId);
   const currency = new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 });
   const tareFor = (record: ProductionRecord) => record.container.toLowerCase().includes("balde") ? 0.28 : 0.12;
   const lineAmount = (record: ProductionRecord) => {
@@ -1304,11 +1305,12 @@ function Dispatch({ clients, productFamilies, availableUnits, onConfirm }: { cli
         <h2 className="mt-1 text-2xl font-black">Destino del despacho</h2>
         <label className="mt-5 block space-y-2 text-sm font-bold">
           Cliente o sucursal
-          <select value={clientId} onChange={(event) => { setClientId(Number(event.target.value)); setMessage(null); }} className="h-12 w-full rounded-xl border bg-white px-3 font-normal">
+          <select required value={selectedClient ? clientId : ""} onChange={(event) => { setClientId(event.target.value); setMessage(null); }} className="h-12 w-full rounded-xl border bg-white px-3 font-normal">
+            <option value="">Seleccionar</option>
             {clients.filter((client) => client.active).map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
           </select>
         </label>
-        <div className="mt-6 space-y-4">
+        {selectedClient && <div className="mt-6 space-y-4">
           <div className="rounded-2xl bg-[#fff4f8] p-4">
             <p className="text-xs text-muted-foreground">Descuentos asignados</p>
             <p className="mt-1 text-sm font-black">{productFamilies.map((family) => `${family.label} ${selectedClient?.discounts[family.discountKey] ?? 0}%`).join(" · ")}</p>
@@ -1317,7 +1319,7 @@ function Dispatch({ clients, productFamilies, availableUnits, onConfirm }: { cli
             <p className="text-xs text-muted-foreground">Modalidad de envase</p>
             <p className="text-sm font-black">{selectedClient?.returnable ? "Retornable" : "No retornable"} · cobra peso {selectedClient?.billingWeight.toLowerCase()}</p>
           </div>
-        </div>
+        </div>}
         <div className="mt-7">
           <p className="mb-2 text-sm font-bold">Escanear código único</p>
           <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); scan(scanValue); }}>
@@ -1340,21 +1342,22 @@ function Dispatch({ clients, productFamilies, availableUnits, onConfirm }: { cli
               <div className="grid size-9 place-items-center rounded-xl bg-[#fbe7ef] text-[#ad416a]"><PackageCheck className="size-4" /></div>
               <div>
                 <p className="text-sm font-bold">{record.productName}</p>
-                <p className="text-xs text-muted-foreground">#{record.uniqueCode} · {record.weight !== null ? `${record.weight.toLocaleString("es-AR", { minimumFractionDigits: 3 })} kg ${selectedClient?.billingWeight.toLowerCase()}` : `${record.units} unidades × ${currency.format(record.price)} c/u`} · Desc. {selectedClient ? discountFor(selectedClient, record.family, productFamilies) : 0}%</p>
+                <p className="text-xs text-muted-foreground">#{record.uniqueCode} · {record.weight !== null ? `${record.weight.toLocaleString("es-AR", { minimumFractionDigits: 3 })} kg ${selectedClient ? selectedClient.billingWeight.toLowerCase() : "netos"}` : `${record.units} unidades × ${currency.format(record.price)} c/u`}{selectedClient && ` · Desc. ${discountFor(selectedClient, record.family, productFamilies)}%`}</p>
               </div>
-              <div className="text-right"><p className="text-sm font-black">{currency.format(lineAmount(record))}</p><button onClick={() => setLines((current) => current.filter((item) => item.uniqueCode !== record.uniqueCode))} className="text-xs font-bold text-[#a94068]">Quitar</button></div>
+              <div className="text-right"><p className="text-sm font-black">{selectedClient ? currency.format(lineAmount(record)) : "—"}</p><button onClick={() => setLines((current) => current.filter((item) => item.uniqueCode !== record.uniqueCode))} className="text-xs font-bold text-[#a94068]">Quitar</button></div>
             </div>
           ))}
         </div>
         <div className="mt-6 flex items-end justify-between border-t pt-5">
           <div><p className="text-sm text-muted-foreground">{lines.length} productos escaneados</p><p className="text-sm font-bold">Peso neto: {totalWeight.toLocaleString("es-AR", { minimumFractionDigits: 3 })} kg</p></div>
-          <div className="text-right"><p className="text-xs uppercase text-muted-foreground">Total con descuento</p><p className="text-3xl font-black">{currency.format(total)}</p></div>
+          <div className="text-right"><p className="text-xs uppercase text-muted-foreground">Total con descuento</p><p className="text-3xl font-black">{selectedClient ? currency.format(total) : "—"}</p></div>
         </div>
-        <AlertDialog>
+        {!selectedClient && <p className="mt-4 text-sm text-muted-foreground">Seleccioná un cliente o sucursal para confirmar el despacho.</p>}
+        <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
           <AlertDialogTrigger asChild><Button disabled={!lines.length || !selectedClient} className="mt-5 h-12 w-full rounded-xl bg-[#ed94b5] font-black text-[#3c2931] hover:bg-[#f2a8c3]"><FileText /> Confirmar y generar remito</Button></AlertDialogTrigger>
           <AlertDialogContent>
             <AlertDialogHeader><AlertDialogTitle>¿Confirmar despacho a {selectedClient?.name}?</AlertDialogTitle><AlertDialogDescription>Los {lines.length} productos se descontarán del stock de fábrica y quedará generado el remito.</AlertDialogDescription></AlertDialogHeader>
-            <AlertDialogFooter><AlertDialogCancel>Volver</AlertDialogCancel><AlertDialogAction disabled={saving} onClick={async (event) => { event.preventDefault(); if (!selectedClient) return; setSaving(true); try { await onConfirm(lines.map((record) => record.uniqueCode), selectedClient); setLines([]); setMessage({ type: "ok", text: "Despacho confirmado, remito generado y stock actualizado." }); } catch (error) { setMessage({ type: "error", text: error instanceof Error ? error.message : "No se pudo confirmar el despacho." }); } finally { setSaving(false); } }} className="bg-[#ed94b5] font-black text-[#3c2931] hover:bg-[#f2a8c3]">{saving ? "Guardando…" : "Confirmar despacho"}</AlertDialogAction></AlertDialogFooter>
+            <AlertDialogFooter><AlertDialogCancel>Volver</AlertDialogCancel><AlertDialogAction disabled={saving || !selectedClient || !lines.length} onClick={async (event) => { event.preventDefault(); if (saving || !selectedClient || !lines.length) return; setSaving(true); try { await onConfirm(lines.map((record) => record.uniqueCode), selectedClient); setLines([]); setClientId(""); setConfirmOpen(false); setMessage({ type: "ok", text: "Despacho confirmado, remito generado y stock actualizado." }); } catch (error) { setMessage({ type: "error", text: error instanceof Error ? error.message : "No se pudo confirmar el despacho." }); } finally { setSaving(false); } }} className="bg-[#ed94b5] font-black text-[#3c2931] hover:bg-[#f2a8c3]">{saving ? "Guardando…" : "Confirmar despacho"}</AlertDialogAction></AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
       </section>
