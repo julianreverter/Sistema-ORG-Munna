@@ -2543,7 +2543,7 @@ const parseInvoiceAmount = (value: string) => {
 };
 const defaultInvoicePriceMode = (supplierTaxMode: string): InvoicePriceMode => supplierTaxMode === "Con IVA" ? "excluded" : "black";
 const invoiceCostCenters = ["Fábrica", "Av. de Mayo"];
-const createInvoiceLine = (priceMode: InvoicePriceMode, kind: InvoiceLineKind = "material"): InvoiceLineDraft => ({ product: "", quantity: "1", price: "", priceMode, kind, category: kind === "material" ? "Materia prima" : kind === "service" ? "Servicios" : "Otros", center: "Fábrica", vatRate: "21" });
+const createInvoiceLine = (priceMode: InvoicePriceMode, kind: InvoiceLineKind = "material"): InvoiceLineDraft => ({ product: "", quantity: "1", price: "", priceMode, kind, category: kind === "material" ? "Materia prima" : kind === "service" ? "Servicios" : "Otros", center: "", vatRate: "21" });
 const calculateInvoiceLine = (line: InvoiceLineDraft, vatRate: number) => {
   const quantity = Number(line.quantity.replace(",", ".")) || 0;
   const enteredUnitPrice = parseInvoiceAmount(line.price);
@@ -2764,7 +2764,8 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
   const [savingFormula, setSavingFormula] = useState(false);
   const [formulaError, setFormulaError] = useState("");
   const [formula, setFormula] = useState<FormulaDraft>({ id: null, productCode: "", name: "", yieldKg: "1", hasWaste: false, items: [{ materialId: "", quantityKg: "" }] });
-  const [purchase, setPurchase] = useState({ supplier: "", invoice: "", invoiceDate: today, dueDate: "", center: "Fábrica", payment: "Cuenta corriente" });
+  const newPurchaseDraft = () => ({ supplier: "", invoice: "", invoiceDate: today, dueDate: "", payment: "" });
+  const [purchase, setPurchase] = useState(newPurchaseDraft);
   const [payment, setPayment] = useState({ supplier: "", paymentDate: today, amount: "", method: "Transferencia", reference: "", note: "" });
   const [expense, setExpense] = useState({ expenseDate: today, area: "Fábrica", category: "Servicios", concept: "", amount: "", notes: "", employee: "", payrollPeriod: today.slice(0,7), paymentStatus: "Pendiente" });
   const [invoiceLines, setInvoiceLines] = useState<InvoiceLineDraft[]>([createInvoiceLine("excluded")]);
@@ -3016,7 +3017,6 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
     setFormulaReferencesAvailable(data.formulaReferencesAvailable === true);
     setProductProfiles(data.productProfiles ?? []);
     setSelectedSupplierName((current) => current && loadedSuppliers.some((item) => item.name === current) ? current : loadedSuppliers[0]?.name ?? "");
-    setPurchase((current) => ({ ...current, supplier: current.supplier && loadedSuppliers.some((item) => item.name === current.supplier) ? current.supplier : loadedSuppliers[0]?.name ?? "" }));
     setPayment((current) => ({ ...current, supplier: current.supplier && loadedSuppliers.some((item) => item.name === current.supplier) ? current.supplier : loadedSuppliers[0]?.name ?? "" }));
      setInvoiceLines((current) => current.map((line) => ({ ...line, product: line.kind !== "material" || (line.product && loadedMaterials.some((item) => item.name === line.product)) ? line.product : "" })));
   };
@@ -3216,10 +3216,8 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
     setSelectedPurchase(null);
     setPurchaseActionError("");
     setPurchaseError("");
-    const supplierName = suppliers[0]?.name ?? "";
-    const supplierProfile = suppliers.find((item) => item.name === supplierName);
-    const nextPurchase = { supplier: supplierName, invoice: "", invoiceDate: today, dueDate: "", center: "Fábrica", payment: "Cuenta corriente" };
-    const nextLines: InvoiceLineDraft[] = [createInvoiceLine(defaultInvoicePriceMode(supplierProfile?.taxMode ?? "Revisar"), kind)];
+    const nextPurchase = newPurchaseDraft();
+    const nextLines = [createInvoiceLine(defaultInvoicePriceMode("Revisar"), kind)];
     setPurchase(nextPurchase);
     setInvoiceLines(nextLines);
     setPurchaseBaseline(JSON.stringify({ purchase: nextPurchase, invoiceLines: nextLines, isCreditNote: creditNote }));
@@ -3243,7 +3241,6 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
       invoice: row.invoice,
       invoiceDate: row.invoiceDate,
       dueDate: row.dueDate ?? "",
-      center: row.center === "Mixto" ? "Fábrica" : row.center,
       payment: row.paymentStatus === "cuenta_corriente" ? "Cuenta corriente" : "Pagado",
     };
     const nextLines: InvoiceLineDraft[] = (row.lines?.length ? row.lines : (row.allocations ?? []).map((allocation) => ({
@@ -3302,15 +3299,27 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
   };
 
   const savePurchase = async () => {
-    const hasInvalidLine = invoiceLines.some((line) => !line.product.trim() || !parseInvoiceAmount(line.price) || !(Number(line.quantity.replace(",", ".")) > 0) || !materials.some((item) => item.name === line.product));
-    if (!purchase.supplier || !purchase.invoice.trim() || !invoiceGross || hasInvalidLine) {
-      setPurchaseError("Completá proveedor, número de comprobante, insumo o servicio, destino, cantidad y precio de todos los renglones.");
+    const missingFields: string[] = [];
+    if (!purchase.supplier) missingFields.push("seleccioná el proveedor");
+    if (!purchase.invoice.trim()) missingFields.push("ingresá el número de comprobante");
+    if (!isCreditNote && !["Pagado", "Cuenta corriente"].includes(purchase.payment)) missingFields.push("seleccioná la forma de pago");
+    invoiceLines.forEach((line, index) => {
+      const missing = [];
+      if (!line.product || !materials.some((item) => item.name === line.product)) missing.push("seleccioná un insumo o servicio del catálogo");
+      if (!invoiceCostCenters.some((center) => center === line.center)) missing.push("seleccioná el destino");
+      if (!(Number(line.quantity.replace(",", ".")) > 0)) missing.push("ingresá la cantidad");
+      if (!(parseInvoiceAmount(line.price) > 0)) missing.push("ingresá el precio");
+      if (missing.length) missingFields.push(`renglón ${index + 1}: ${missing.join(", ")}`);
+    });
+    if (missingFields.length || !invoiceGross) {
+      const document = isCreditNote ? "la nota de crédito" : "la factura";
+      setPurchaseError(`No podés confirmar ${document}. ${missingFields.length ? `Revisá estos campos: ${missingFields.join("; ")}.` : "El total debe ser mayor a cero."}`);
       return;
     }
     setSavingPurchase(true); setPurchaseError("");
     try {
       const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-        action: editingPurchaseId != null ? "update-purchase" : isCreditNote ? "register-credit-note" : "register-purchase", purchaseId: editingPurchaseId, purchase, supplierTaxMode: activeSupplier.taxMode,
+        action: editingPurchaseId != null ? "update-purchase" : isCreditNote ? "register-credit-note" : "register-purchase", purchaseId: editingPurchaseId, purchase: isCreditNote ? { ...purchase, payment: "Cuenta corriente" } : purchase, supplierTaxMode: activeSupplier.taxMode,
         lines: invoiceLines.map((line) => {
           const profile = materials.find((item) => item.name === line.product);
           return {
@@ -3328,8 +3337,8 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
       setPurchaseOpen(false);
       setEditingPurchaseId(null);
       setSelectedPurchase(null);
-      setPurchase((current) => ({ supplier: current.supplier, invoice: "", invoiceDate: today, dueDate: "", center: "Fábrica", payment: "Cuenta corriente" }));
-      setInvoiceLines([createInvoiceLine(defaultInvoicePriceMode(activeSupplier.taxMode))]);
+      setPurchase(newPurchaseDraft());
+      setInvoiceLines([createInvoiceLine(defaultInvoicePriceMode("Revisar"))]);
     } catch (error) {
       setPurchaseError(error instanceof Error ? error.message : "No se pudo guardar la factura.");
     } finally { setSavingPurchase(false); }
@@ -3571,7 +3580,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
           {invoiceLines.map((line, index) => { const profile = materials.find(item => item.name === line.product); const amounts = calculateInvoiceLine(line, Number(profile?.vat ?? line.vatRate ?? 21)); return <div key={index} className="space-y-3 rounded-2xl border bg-white p-4">
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="space-y-1 text-xs font-bold">Insumo / servicio<Input list={`purchase-products-${index}`} value={line.product} onChange={e => { const selected=materials.find((item)=>item.name===e.target.value); setInvoiceLines(lines => lines.map((item, i) => i === index ? {...item,product:e.target.value,...(selected?{kind:selected.kind??"material",category:selected.category??"Materia prima",vatRate:String(selected.vat)}:{})} : item)); }} disabled={!purchase.supplier} placeholder="Escribí para buscar en el catálogo…"/><datalist id={`purchase-products-${index}`}>{materials.map(item=><option key={item.id ?? item.name} value={item.name}/>)}</datalist><span className="block font-normal text-muted-foreground">{profile ? <><Badge variant="outline" className="mr-2 text-[10px]">{categoryLabel(profile.category ?? "Materia prima")}</Badge>{profile.kind === "material" ? `${profile.pack} · IVA ${String(profile.vat).replace(".", ",")}%` : `IVA ${String(profile.vat).replace(".", ",")}%`}</> : "Seleccioná un elemento del catálogo de Insumos / Servicios."}</span></label>
-              <label className="space-y-1 text-xs font-bold">Destino<select value={line.center} onChange={(e)=>setInvoiceLines(lines=>lines.map((item,i)=>i===index?{...item,center:e.target.value}:item))} className="h-10 w-full rounded-md border bg-white px-3 text-sm font-normal">{invoiceCostCenters.map(center=><option key={center}>{center}</option>)}</select><span className="block font-normal text-muted-foreground">Indicá si corresponde a Fábrica o Av. de Mayo.</span></label>
+              <label className="space-y-1 text-xs font-bold">Destino<select value={line.center} onChange={(e)=>setInvoiceLines(lines=>lines.map((item,i)=>i===index?{...item,center:e.target.value}:item))} className="h-10 w-full rounded-md border bg-white px-3 text-sm font-normal"><option value="">Seleccionar</option>{invoiceCostCenters.map(center=><option key={center}>{center}</option>)}</select><span className="block font-normal text-muted-foreground">Indicá si corresponde a Fábrica o Av. de Mayo.</span></label>
             </div>
             <div className="grid gap-3 lg:grid-cols-[.7fr_1fr_1.5fr_auto]">
               <label className="space-y-1 text-xs font-bold">Cantidad<Input value={line.quantity} onChange={e => setInvoiceLines(lines => lines.map((item, i) => i === index ? {...item, quantity:e.target.value} : item))} inputMode="decimal"/></label>
@@ -3581,9 +3590,9 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
             </div>
           </div>})}
         </div>
-        <div className="mt-2 grid gap-4 sm:grid-cols-2"><div className="rounded-xl border bg-slate-50 p-3 text-xs text-muted-foreground"><b className="text-foreground">Compras repartidas:</b> repetí la materia prima en otro renglón, indicá la cantidad correspondiente y elegí otro destino.</div><label className="space-y-2 text-sm font-bold">Condición de pago<select disabled={isCreditNote} value={isCreditNote ? "Cuenta corriente" : purchase.payment} onChange={e => setPurchase({...purchase, payment:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option>Pagado</option><option>Cuenta corriente</option></select></label></div>
-        <div className="ml-auto mt-3 w-full max-w-sm space-y-2 rounded-2xl bg-[#f7f3f5] p-4 text-sm"><div className="flex justify-between"><span>Neto</span><b>{invoiceMoney(invoiceNet)}</b></div>{invoiceVat21 > 0 && <div className="flex justify-between text-xs"><span>IVA 21% · crédito fiscal</span><b>{invoiceMoney(invoiceVat21)}</b></div>}{invoiceVat105 > 0 && <div className="flex justify-between text-xs"><span>IVA 10,5% · crédito fiscal</span><b>{invoiceMoney(invoiceVat105)}</b></div>}<div className="flex justify-between"><span>IVA automático total</span><b>{invoiceMoney(invoiceTax)}</b></div><div className="flex justify-between border-t pt-3 text-lg"><span>{isCreditNote ? "Total a descontar" : "Total factura"}</span><b>{invoiceMoney(invoiceGross)}</b></div>{purchase.payment === "Cuenta corriente" && <p className="text-xs text-amber-700">{isCreditNote ? "Se descontará de la deuda. El excedente quedará a favor de Münna." : "Se sumará automáticamente al saldo del proveedor."}</p>}</div>
-        {purchaseError && <p className="text-sm font-bold text-red-600">{purchaseError}</p>}
+        <div className="mt-2 grid gap-4 sm:grid-cols-2"><div className="rounded-xl border bg-slate-50 p-3 text-xs text-muted-foreground"><b className="text-foreground">Compras repartidas:</b> repetí la materia prima en otro renglón, indicá la cantidad correspondiente y elegí otro destino.</div><label className="space-y-2 text-sm font-bold">Condición de pago<select disabled={isCreditNote} value={isCreditNote ? "Cuenta corriente" : purchase.payment} onChange={e => setPurchase({...purchase, payment:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option value="">Seleccionar</option><option>Pagado</option><option>Cuenta corriente</option></select></label></div>
+        <div className="ml-auto mt-3 w-full max-w-sm space-y-2 rounded-2xl bg-[#f7f3f5] p-4 text-sm"><div className="flex justify-between"><span>Neto</span><b>{invoiceMoney(invoiceNet)}</b></div>{invoiceVat21 > 0 && <div className="flex justify-between text-xs"><span>IVA 21% · crédito fiscal</span><b>{invoiceMoney(invoiceVat21)}</b></div>}{invoiceVat105 > 0 && <div className="flex justify-between text-xs"><span>IVA 10,5% · crédito fiscal</span><b>{invoiceMoney(invoiceVat105)}</b></div>}<div className="flex justify-between"><span>IVA automático total</span><b>{invoiceMoney(invoiceTax)}</b></div><div className="flex justify-between border-t pt-3 text-lg"><span>{isCreditNote ? "Total a descontar" : "Total factura"}</span><b>{invoiceMoney(invoiceGross)}</b></div>{(isCreditNote || purchase.payment === "Cuenta corriente") && <p className="text-xs text-amber-700">{isCreditNote ? "Se descontará de la deuda. El excedente quedará a favor de Münna." : "Se sumará automáticamente al saldo del proveedor."}</p>}</div>
+        {purchaseError && <p role="alert" className="text-sm font-bold text-red-600">{purchaseError}</p>}
         <DialogFooter><Button variant="outline" disabled={savingPurchase} onClick={requestPurchaseClose}>Cancelar</Button><Button disabled={savingPurchase} onClick={savePurchase} className="bg-[#3b2931] text-white">{savingPurchase ? "Guardando…" : editingPurchaseId != null ? "Guardar cambios" : isCreditNote ? "Guardar nota de crédito" : "Guardar factura completa"}</Button></DialogFooter>
       </DialogContent></Dialog>
     </section>
