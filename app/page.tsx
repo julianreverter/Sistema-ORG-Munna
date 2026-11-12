@@ -2709,6 +2709,8 @@ const flavorCosts = [
 const money = (value: number) => new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 }).format(value);
 const invoiceMoney = (value: number) => new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
 
+type SupplierAdjustment = { id: string; supplierId: number; movementDate: string; concept: string; amount: number };
+
 function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean }) {
   const today = new Date().toISOString().slice(0, 10);
   const [tab, setTab] = useState<CostTab>("resumen");
@@ -2753,6 +2755,11 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
   const [supplierMessage, setSupplierMessage] = useState("");
   const [editingSupplierId, setEditingSupplierId] = useState<number | null>(null);
   const [archivingSupplierId, setArchivingSupplierId] = useState<number | null>(null);
+  const [supplierAdjustments, setSupplierAdjustments] = useState<SupplierAdjustment[]>([]);
+  const [adjustment, setAdjustment] = useState({ id: "", movementDate: "", direction: "", concept: "", amount: "" });
+  const [adjustmentOpen, setAdjustmentOpen] = useState(false);
+  const [savingAdjustment, setSavingAdjustment] = useState(false);
+  const [adjustmentError, setAdjustmentError] = useState("");
   const [supplierProfileOpen, setSupplierProfileOpen] = useState(false);
   const [supplier, setSupplier] = useState({ name: "", taxMode: "con_iva", category: "Materia prima" });
   const [selectedSupplierName, setSelectedSupplierName] = useState("");
@@ -2851,13 +2858,17 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
     const movements = [
       ...purchases.filter((row) => row.supplierId === selectedSupplier.id && row.paymentStatus === "cuenta_corriente").map((row) => ({ dateKey: row.invoiceDate, date: row.date, detail: row.documentType === "credit_note" ? `Nota de crédito · ${row.invoice}` : row.invoice, debit: Math.max(0, row.total), credit: Math.max(0, -row.total) })),
       ...payments.filter((row) => row.supplierId === selectedSupplier.id).map((row) => ({ dateKey: row.paymentDate, date: row.date, detail: `Pago · ${row.method} ${row.reference}`, debit: 0, credit: row.amount })),
+      ...supplierAdjustments.filter((row) => row.supplierId === selectedSupplier.id).map((row) => ({
+        dateKey: row.movementDate, date: new Date(row.movementDate + "T12:00:00").toLocaleDateString("es-AR"),
+        detail: "Ajuste · " + row.concept, debit: Math.max(0, row.amount), credit: Math.max(0, -row.amount),
+      })),
     ].sort((a, b) => a.dateKey.localeCompare(b.dateKey));
     let balance = 0;
     return movements.map((movement) => {
       balance += movement.debit - movement.credit;
       return { ...movement, balance };
     });
-  }, [purchases, payments, selectedSupplier]);
+  }, [purchases, payments, supplierAdjustments, selectedSupplier]);
 
   const availableBaseFormulas = formulas.filter((candidate) => {
     const visited = new Set<number>();
@@ -2997,6 +3008,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
       operatingExpenses?: FinancialExpense[];
       rawMaterials?: RawMaterial[];
       purchases?: CostPurchaseRow[];
+      supplierAdjustments?: SupplierAdjustment[];
       supplierPayments?: SupplierPaymentRow[];
       suppliers?: SupplierCostProfile[];
       formulas?: FormulaRecord[];
@@ -3011,6 +3023,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
     setExpenseRows(data.operatingExpenses ?? []);
     setMaterials(loadedMaterials);
     setPurchases(data.purchases ?? []);
+    setSupplierAdjustments(data.supplierAdjustments ?? []);
     setPayments(data.supplierPayments ?? []);
     setSuppliers(loadedSuppliers);
     setFormulas(data.formulas ?? []);
@@ -3208,6 +3221,36 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
       setMaterialMessage("");
       setMaterialError(saveError instanceof Error ? saveError.message : "No se pudo archivar el insumo o servicio.");
     } finally { setArchivingMaterial(""); }
+  };
+
+  const saveSupplierAdjustment = async () => {
+    const amount = parseInvoiceAmount(adjustment.amount);
+    const concept = adjustment.concept.trim();
+    if (savingAdjustment || !selectedSupplier) return;
+    if (!adjustment.movementDate || !adjustment.direction || !concept || !Number.isFinite(amount) || amount <= 0) {
+      setAdjustmentError("Completá la fecha, el tipo de ajuste, el concepto y un importe mayor a cero.");
+      return;
+    }
+    setSavingAdjustment(true);
+    setAdjustmentError("");
+    try {
+      const response = await fetch("/api/operations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "register-supplier-adjustment",
+          adjustment: { ...adjustment, concept, supplierId: selectedSupplier.id, amount: adjustment.direction === "debit" ? amount : -amount },
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "No se pudo guardar el ajuste.");
+      await loadCostData();
+      setAdjustmentOpen(false);
+    } catch (error) {
+      setAdjustmentError(error instanceof Error ? error.message : "No se pudo guardar el ajuste.");
+    } finally {
+      setSavingAdjustment(false);
+    }
   };
 
   const openNewPurchase = (kind: InvoiceLineKind = "material", creditNote = false) => {
@@ -3519,7 +3562,33 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
 
       <Dialog open={supplierOpen} onOpenChange={(open) => { setSupplierOpen(open); if (!open) resetSupplierDraft(); }}><DialogContent className="sm:max-w-[620px]"><DialogHeader><DialogTitle>{editingSupplierId != null ? "Editar proveedor" : "Nuevo proveedor"}</DialogTitle><DialogDescription>{editingSupplierId != null ? "Los cambios se aplicarán al perfil sin perder facturas, pagos ni movimientos anteriores." : "El proveedor quedará disponible para facturas, pagos y cuenta corriente."}</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold sm:col-span-2">Nombre o razón social<Input value={supplier.name} onChange={(e)=>setSupplier({...supplier,name:e.target.value})} placeholder="Ej. Vacalin"/></label><label className="space-y-2 text-sm font-bold">Condición de IVA<select value={supplier.taxMode} onChange={(e)=>setSupplier({...supplier,taxMode:e.target.value})} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option value="con_iva">Con IVA</option><option value="sin_iva">Sin IVA</option><option value="revisar">Revisar</option></select></label><label className="space-y-2 text-sm font-bold">Categoría<Input value={supplier.category} onChange={(e)=>setSupplier({...supplier,category:e.target.value})} placeholder="Ej. Materia prima"/></label></div>{supplierError && <p className="text-sm font-bold text-red-600">{supplierError}</p>}<DialogFooter><Button variant="outline" onClick={()=>{setSupplierOpen(false);resetSupplierDraft();}}>Cancelar</Button><Button disabled={savingSupplier} onClick={saveSupplier} className="bg-[#3b2931] text-white">{savingSupplier ? "Guardando…" : editingSupplierId != null ? "Guardar cambios" : "Guardar proveedor"}</Button></DialogFooter></DialogContent></Dialog>
 
-      <Dialog open={supplierProfileOpen} onOpenChange={setSupplierProfileOpen}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[850px]">{selectedSupplier && <><DialogHeader><DialogTitle>Perfil de proveedor · {selectedSupplier.name}</DialogTitle><DialogDescription>Datos fiscales, saldo y movimientos de la cuenta corriente.</DialogDescription></DialogHeader><div className="grid gap-3 sm:grid-cols-4"><div className="rounded-2xl bg-[#fff3f7] p-4"><p className="text-xs font-bold uppercase text-muted-foreground">Condición fiscal</p><p className="mt-1 font-black">{selectedSupplier.taxMode}</p></div><div className="rounded-2xl bg-[#f5f3f4] p-4"><p className="text-xs font-bold uppercase text-muted-foreground">Categoría</p><p className="mt-1 font-black">{selectedSupplier.category || "Sin categoría"}</p></div><div className="rounded-2xl bg-[#fff8e8] p-4"><p className="text-xs font-bold uppercase text-muted-foreground">Facturas</p><p className="mt-1 font-black">{selectedSupplier.invoices}</p></div><div className="rounded-2xl bg-emerald-50 p-4"><p className="text-xs font-bold uppercase text-muted-foreground">Saldo actual</p><p className={`mt-1 font-black ${selectedSupplier.debt < 0 ? "text-emerald-700" : selectedSupplier.debt > 0 ? "text-rose-700" : ""}`}>{money(selectedSupplier.debt)}</p></div></div><div className="mt-2 overflow-hidden rounded-2xl border"><Table><TableHeader><TableRow><TableHead>Fecha</TableHead><TableHead>Movimiento</TableHead><TableHead className="text-right">Debe (+)</TableHead><TableHead className="text-right">Haber (−)</TableHead><TableHead className="text-right">Saldo</TableHead></TableRow></TableHeader><TableBody>{supplierLedger.length === 0 && <TableRow><TableCell colSpan={5} className="py-10 text-center text-muted-foreground">Este proveedor todavía no tiene movimientos.</TableCell></TableRow>}{supplierLedger.map((row,index)=><TableRow key={`${row.dateKey}-${index}`}><TableCell>{row.date}</TableCell><TableCell className="font-medium">{row.detail}</TableCell><TableCell className="text-right text-rose-700">{row.debit ? money(row.debit) : "—"}</TableCell><TableCell className="text-right text-emerald-700">{row.credit ? money(row.credit) : "—"}</TableCell><TableCell className={`text-right font-black ${row.balance < 0 ? "text-emerald-700" : row.balance > 0 ? "text-rose-700" : ""}`}>{money(row.balance)}</TableCell></TableRow>)}</TableBody></Table><div className="border-t bg-[#faf7f8] px-5 py-3 text-xs text-muted-foreground">Saldo positivo: Münna debe al proveedor · Saldo negativo: queda dinero a favor de Münna.</div></div><DialogFooter><Button variant="outline" onClick={() => setSupplierProfileOpen(false)}>Cerrar</Button><Button onClick={() => openEditSupplier(selectedSupplier)} className="bg-[#3b2931] text-white">Editar proveedor</Button></DialogFooter></>}</DialogContent></Dialog>
+      <Dialog open={adjustmentOpen} onOpenChange={(open) => { if (!savingAdjustment) setAdjustmentOpen(open); }}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Ajuste de cuenta · {selectedSupplier?.name}</DialogTitle>
+            <DialogDescription>El ajuste modifica el saldo de la cuenta corriente del proveedor.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3">
+            <label className="space-y-1 text-sm font-bold">Fecha<Input type="date" value={adjustment.movementDate} onChange={(event) => setAdjustment({ ...adjustment, movementDate: event.target.value })}/></label>
+            <label className="space-y-1 text-sm font-bold">Tipo de ajuste
+              <select className="h-10 w-full rounded-md border bg-white px-3 font-normal" value={adjustment.direction} onChange={(event) => setAdjustment({ ...adjustment, direction: event.target.value })}>
+                <option value="">Seleccionar</option>
+                <option value="debit">Positivo (+) · aumenta el saldo</option>
+                <option value="credit">Negativo (−) · reduce el saldo</option>
+              </select>
+            </label>
+            <label className="space-y-1 text-sm font-bold">Importe<Input inputMode="decimal" value={adjustment.amount} onChange={(event) => setAdjustment({ ...adjustment, amount: event.target.value })}/></label>
+            <label className="space-y-1 text-sm font-bold">Concepto<Input maxLength={250} value={adjustment.concept} onChange={(event) => setAdjustment({ ...adjustment, concept: event.target.value })}/></label>
+            {adjustmentError && <p role="alert" className="text-sm text-red-600">{adjustmentError}</p>}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={savingAdjustment} onClick={() => setAdjustmentOpen(false)}>Cancelar</Button>
+            <Button disabled={savingAdjustment} onClick={saveSupplierAdjustment}>{savingAdjustment ? "Guardando…" : "Guardar ajuste"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={supplierProfileOpen} onOpenChange={setSupplierProfileOpen}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[850px]">{selectedSupplier && <><DialogHeader><DialogTitle>Perfil de proveedor · {selectedSupplier.name}</DialogTitle><DialogDescription>Datos fiscales, saldo y movimientos de la cuenta corriente.</DialogDescription></DialogHeader><div className="flex justify-end"><Button variant="outline" onClick={() => { setAdjustment({ id: crypto.randomUUID(), movementDate: today, direction: "", concept: "", amount: "" }); setAdjustmentError(""); setAdjustmentOpen(true); }}>Agregar ajuste de cuenta</Button></div><div className="grid gap-3 sm:grid-cols-4"><div className="rounded-2xl bg-[#fff3f7] p-4"><p className="text-xs font-bold uppercase text-muted-foreground">Condición fiscal</p><p className="mt-1 font-black">{selectedSupplier.taxMode}</p></div><div className="rounded-2xl bg-[#f5f3f4] p-4"><p className="text-xs font-bold uppercase text-muted-foreground">Categoría</p><p className="mt-1 font-black">{selectedSupplier.category || "Sin categoría"}</p></div><div className="rounded-2xl bg-[#fff8e8] p-4"><p className="text-xs font-bold uppercase text-muted-foreground">Facturas</p><p className="mt-1 font-black">{selectedSupplier.invoices}</p></div><div className="rounded-2xl bg-emerald-50 p-4"><p className="text-xs font-bold uppercase text-muted-foreground">Saldo actual</p><p className={`mt-1 font-black ${selectedSupplier.debt < 0 ? "text-emerald-700" : selectedSupplier.debt > 0 ? "text-rose-700" : ""}`}>{money(selectedSupplier.debt)}</p></div></div><div className="mt-2 overflow-hidden rounded-2xl border"><Table><TableHeader><TableRow><TableHead>Fecha</TableHead><TableHead>Movimiento</TableHead><TableHead className="text-right">Debe (+)</TableHead><TableHead className="text-right">Haber (−)</TableHead><TableHead className="text-right">Saldo</TableHead></TableRow></TableHeader><TableBody>{supplierLedger.length === 0 && <TableRow><TableCell colSpan={5} className="py-10 text-center text-muted-foreground">Este proveedor todavía no tiene movimientos.</TableCell></TableRow>}{supplierLedger.map((row,index)=><TableRow key={`${row.dateKey}-${index}`}><TableCell>{row.date}</TableCell><TableCell className="font-medium">{row.detail}</TableCell><TableCell className="text-right text-rose-700">{row.debit ? money(row.debit) : "—"}</TableCell><TableCell className="text-right text-emerald-700">{row.credit ? money(row.credit) : "—"}</TableCell><TableCell className={`text-right font-black ${row.balance < 0 ? "text-emerald-700" : row.balance > 0 ? "text-rose-700" : ""}`}>{money(row.balance)}</TableCell></TableRow>)}</TableBody></Table><div className="border-t bg-[#faf7f8] px-5 py-3 text-xs text-muted-foreground">Saldo positivo: Münna debe al proveedor · Saldo negativo: queda dinero a favor de Münna.</div></div><DialogFooter><Button variant="outline" onClick={() => setSupplierProfileOpen(false)}>Cerrar</Button><Button onClick={() => openEditSupplier(selectedSupplier)} className="bg-[#3b2931] text-white">Editar proveedor</Button></DialogFooter></>}</DialogContent></Dialog>
 
       <Dialog open={formulaOpen} onOpenChange={setFormulaOpen}><DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-[820px]"><DialogHeader><DialogTitle>{formula.id ? "Editar fórmula" : "Nueva fórmula"}</DialogTitle><DialogDescription>La fórmula siempre obtiene 1 kg final. Sin desperdicio, los ingredientes deben sumar 1 kg; con desperdicio, pueden superar 1 kg.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-3"><label className="space-y-2 text-sm font-bold sm:col-span-3">Nombre de la fórmula<Input value={formula.name} onChange={(e)=>setFormula({...formula,name:e.target.value})} placeholder="Ej. Base Americana o Granizado"/></label><div className="flex items-start justify-between gap-4 rounded-2xl border bg-amber-50 p-4 sm:col-span-3"><div><p className="font-bold">Tiene desperdicio</p><p className="text-xs text-muted-foreground">Permite consumir más de 1 kg de ingredientes para obtener 1 kg final. Sólo modifica el costeo; no mueve stock.</p></div><Switch checked={formula.hasWaste} onCheckedChange={(checked)=>setFormula({...formula,hasWaste:checked})} aria-label="Tiene desperdicio"/></div><label className="flex items-center gap-2 text-sm sm:col-span-3"><input type="checkbox" checked={Boolean(formula.productCode)} onChange={(e)=>setFormula({...formula,productCode:e.target.checked ? activeProductCatalog()[0]?.code ?? "" : ""})}/>Vincular a un producto del maestro (opcional)</label>{formula.productCode && <label className="space-y-2 text-sm font-bold sm:col-span-3">Producto del maestro<Combobox items={productionProducts()} filter={comboboxWordFilter} autoHighlight value={formula.productCode ? productionProducts().find((item) => item.startsWith(`${formula.productCode} · `)) ?? null : null} onValueChange={(value) => { if (typeof value !== "string" || !value) return; const selectedCode = value.split(" · ")[0].trim(); const selectedProduct = activeProductCatalog().find((item) => String(item.code) === selectedCode); if (selectedProduct) setFormula((current) => ({...current,productCode:String(selectedProduct.code),name:current.name || selectedProduct.name})); }}><ComboboxInput placeholder="Escribí el nombre o código del producto…" className="h-11 w-full rounded-xl bg-white font-normal"/><ComboboxContent><ComboboxEmpty>No encontramos ese producto en el maestro.</ComboboxEmpty><ComboboxList>{(item) => <ComboboxItem key={item} value={item}>{item}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox><span className="block text-xs font-normal text-muted-foreground">La fórmula queda vinculada a este producto del maestro.</span></label>}<div className={`rounded-2xl border-2 p-4 ${formulaIsValid ? "border-emerald-500 bg-emerald-50" : "border-amber-400 bg-amber-50"}`}><p className="text-xs font-bold uppercase text-muted-foreground">Cantidad utilizada</p><p className="mt-1 text-2xl font-black">{formulaQuantityTotal.toLocaleString("es-AR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} kg → 1,0000 kg final</p><p className={`mt-1 text-xs font-bold ${formulaIsValid ? "text-emerald-700" : "text-amber-800"}`}>{formulaIsValid ? formula.hasWaste ? `Rendimiento ${formulaYieldPercent.toLocaleString("es-AR", { maximumFractionDigits: 1 })}% · desperdicio ${formulaWasteKg.toLocaleString("es-AR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} kg` : "Exacto: ya se puede guardar" : formula.hasWaste ? "Con desperdicio, la cantidad utilizada debe superar 1,0000 kg" : formulaDifference > 0 ? `Faltan ${formulaDifference.toLocaleString("es-AR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} kg` : `Sobran ${Math.abs(formulaDifference).toLocaleString("es-AR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} kg`}</p></div><div className="rounded-2xl bg-[#fff3f7] p-4 sm:col-span-2"><p className="text-xs font-bold uppercase text-muted-foreground">Costo calculado</p><div className="mt-2 flex flex-wrap gap-6"><div><b className="text-lg">{money(formulaCost)}</b><p className="text-xs text-muted-foreground">Costo de todos los insumos por 1 kg final</p></div>{formulaPresentationCost != null && <div><b className="text-lg">{money(formulaPresentationCost)}</b><p className="text-xs text-muted-foreground">Presentación de {Number(selectedFormulaProfile?.packageWeightKg).toLocaleString("es-AR", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg</p></div>}</div></div></div>{selectedFormulaCatalogProduct && selectedFormulaCatalogProduct.family !== "Helado" && Number(selectedFormulaProfile?.packageWeightKg ?? 0) <= 0 && <p className="rounded-xl bg-amber-50 p-3 text-sm font-bold text-amber-800">Para calcular el costo de la presentación, completá su peso neto en Maestro de productos.</p>}<div className="space-y-3"><div className="flex items-center justify-between"><h4 className="font-black">Ingredientes consumidos para obtener 1 kg</h4><Button type="button" variant="outline" size="sm" onClick={()=>setFormula({...formula,items:[...formula.items,{materialId:formulaMaterials[0]?.id ? String(formulaMaterials[0].id) : "",quantityKg:""}]})}><Plus /> Agregar ingrediente</Button></div>{formula.items.map((item,index)=>{ const selectedMaterial=materials.find(row=>String(row.id)===item.materialId); const selectedBaseFormula=formulas.find(row=>String(row.id)===item.recipeId); const unitCost=ingredientUnitCost(item); const quantity=Number(item.quantityKg.replace(",","."))||0; return <div key={index} className="grid gap-3 rounded-2xl border bg-white p-4 sm:grid-cols-[2fr_1fr_1fr_auto]"><div className="space-y-3"><label className="block space-y-1 text-xs font-bold">Tipo de ingrediente<select value={item.ingredientType ?? (item.recipeId ? "recipe" : "material")} onChange={(e)=>{const ingredientType=e.target.value as "material" | "recipe";setFormula({...formula,items:formula.items.map((row,i)=>i===index?{...row,ingredientType,materialId:"",recipeId:ingredientType === "recipe" ? "" : undefined}:row)});}} className="h-10 w-full rounded-md border bg-white px-3 text-sm font-normal"><option value="material">Materia prima</option><option value="recipe" disabled={!formulaReferencesAvailable}>Producto</option></select></label>{(item.ingredientType ?? (item.recipeId ? "recipe" : "material")) === "recipe" ? <label className="block space-y-1 text-xs font-bold">Fórmula del producto<Combobox items={availableBaseFormulas.map(row=>String(row.id))} value={item.recipeId || null} itemToStringLabel={(id)=>availableBaseFormulas.find(row=>String(row.id)===id)?.name ?? ""} filter={(id,query)=>comboboxWordFilter(availableBaseFormulas.find(row=>String(row.id)===id)?.name ?? "",query)} autoHighlight onValueChange={(value)=>setFormula((current)=>({...current,items:current.items.map((row,i)=>i===index?{...row,recipeId:value ?? "",materialId:""}:row)}))}><ComboboxInput aria-label="Buscar fórmula" placeholder="Escribí para buscar fórmula…" onFocus={(event)=>event.target.select()} className="h-10 w-full bg-white text-sm font-normal"/><ComboboxContent><ComboboxEmpty>No encontramos esa fórmula.</ComboboxEmpty><ComboboxList>{(id)=><ComboboxItem key={id} value={id}>{availableBaseFormulas.find(row=>String(row.id)===id)?.name}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox><span className="block font-normal text-muted-foreground">Incluye fórmulas con o sin producto del maestro.</span></label> : <label className="block space-y-1 text-xs font-bold">Materia prima<Combobox items={formulaMaterials.filter(row=>row.id != null).map(row=>String(row.id))} value={item.materialId || null} itemToStringLabel={(id)=>formulaMaterials.find(row=>String(row.id)===id)?.name ?? ""} filter={(id,query)=>comboboxWordFilter(formulaMaterials.find(row=>String(row.id)===id)?.name ?? "",query)} autoHighlight onValueChange={(value)=>setFormula((current)=>({...current,items:current.items.map((row,i)=>i===index?{...row,materialId:value ?? "",recipeId:undefined}:row)}))}><ComboboxInput aria-label="Buscar materia prima" placeholder="Escribí para buscar materia prima…" onFocus={(event)=>event.target.select()} className="h-10 w-full bg-white text-sm font-normal"/><ComboboxContent><ComboboxEmpty>No encontramos esa materia prima.</ComboboxEmpty><ComboboxList>{(id)=><ComboboxItem key={id} value={id}>{formulaMaterials.find(row=>String(row.id)===id)?.name}</ComboboxItem>}</ComboboxList></ComboboxContent></Combobox></label>}<span className="block text-xs font-normal text-muted-foreground">{selectedBaseFormula ? `Fórmula vinculada: ${invoiceMoney(unitCost)} por kg. Se actualiza con la fórmula base.` : selectedMaterial ? `Precio tomado: ${invoiceMoney(unitCost)} por kg` : "Seleccioná un ingrediente para ver el precio por kg"}</span></div><label className="space-y-1 text-xs font-bold">Cantidad en kg<Input value={item.quantityKg} onChange={(e)=>setFormula({...formula,items:formula.items.map((row,i)=>i===index?{...row,quantityKg:e.target.value}:row)})} inputMode="decimal" placeholder="0,0000"/><span className="block font-normal text-muted-foreground">{formula.hasWaste ? "kg utilizados antes del desperdicio" : "kg dentro de 1 kg final"}</span></label><div className="self-end rounded-xl bg-[#f7f3f5] px-3 py-2 text-right"><p className="text-xs text-muted-foreground">Costo</p><b>{money(quantity * unitCost)}</b></div><Button type="button" variant="ghost" className="self-end text-muted-foreground" disabled={formula.items.length===1} onClick={()=>setFormula({...formula,items:formula.items.filter((_,i)=>i!==index)})}>Quitar</Button></div>})}</div>{formulaError && <p className="text-sm font-bold text-red-600">{formulaError}</p>}<DialogFooter><Button variant="outline" onClick={()=>setFormulaOpen(false)}>Cancelar</Button><Button disabled={savingFormula || !formulaIsValid} onClick={saveFormula} className="bg-[#3b2931] text-white">{savingFormula ? "Guardando…" : "Guardar fórmula"}</Button></DialogFooter></DialogContent></Dialog>
 
