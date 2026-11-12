@@ -286,7 +286,7 @@ export async function GET() {
   try {
     const { profile, supabase } = await context();
     const productionSelect = "*, products(code,name,family,presentation,container), responsible:profiles!production_units_responsible_id_fkey(display_name), dispatch_items(id,returned_at,dispatches(remittance_number,clients(name)))";
-    const [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, recipesResult, productsResult, clientsResult, productFamiliesResult] = await Promise.all([
+    const [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, supplierAdjustmentsResult, recipesResult, productsResult, clientsResult, productFamiliesResult] = await Promise.all([
       supabase.from("production_units").select(productionSelect).order("id", { ascending: false }).limit(5000),
       supabase.from("dispatches").select("*, clients(name), dispatch_items(*, customer_returns(id,amount,reason,comment,received_by,created_at), production_units(unique_code,weight_kg,units,products(code,name,family,presentation,container)))").order("id", { ascending: false }).limit(5000),
       supabase.from("customer_payments").select("*, clients(name)").order("id", { ascending: false }).limit(500),
@@ -298,12 +298,13 @@ export async function GET() {
       supabase.from("purchased_products").select("*, suppliers(id,name)").eq("active", true).order("master_name"),
       supabase.from("suppliers").select("id,name,tax_mode,category,active").eq("active", true).neq("name", "Catálogo interno").order("name"),
       supabase.from("supplier_payments").select("*, suppliers(name)").order("id", { ascending: false }).limit(5000),
+      supabase.from("supplier_account_adjustments").select("id,supplier_id,movement_date,concept,signed_amount").order("movement_date").order("created_at"),
       supabase.from("recipes").select("*, products(code,name,family,presentation,container,unit_type,tare_kg), recipe_items(id,purchased_product_id,quantity_kg,purchased_products(master_name,last_final_cost_per_unit,cost_unit))").eq("active", true).order("name"),
       supabase.from("products").select("code,name,family,presentation,container,unit_type,tare_kg,base_price,ingredients,expiry_days,active").order("name"),
       supabase.from("clients").select("id,name,kind,discounts,returnable,billing_weight,active").eq("active", true).order("name"),
       supabase.from("product_families").select("id,name,label,discount_key,requires_package_weight,unit_type,active").eq("active", true).order("id"),
     ]);
-    const firstError = [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, recipesResult, productsResult, clientsResult, productFamiliesResult].find((r) => r.error)?.error;
+    const firstError = [unitsResult, dispatchResult, customerPaymentsResult, adjustmentsResult, expensesResult, salesResult, purchasesResult, staffResult, materialsResult, suppliersResult, supplierPaymentsResult, supplierAdjustmentsResult, recipesResult, productsResult, clientsResult, productFamiliesResult].find((r) => r.error)?.error;
     if (firstError) throw firstError;
 
     const categoriesResult = await supabase.from("expense_categories").select("key,name").order("name");
@@ -427,6 +428,10 @@ export async function GET() {
       note: r.notes ?? "Pago a cuenta",
       createdAt: r.created_at,
     }));
+    const supplierAdjustments = (supplierAdjustmentsResult.data ?? []).map((row: Row) => ({
+      id: row.id, supplierId: row.supplier_id, movementDate: row.movement_date,
+      concept: row.concept, amount: n(row.signed_amount),
+    }));
     const supplierRows = (suppliersResult.data ?? []).map((r: Row) => {
       const supplierPurchases = purchaseRows.filter((purchase: Row) => n(purchase.supplierId) === n(r.id));
       const supplierPayments = supplierPaymentRows.filter((payment: Row) => n(payment.supplierId) === n(r.id));
@@ -439,7 +444,7 @@ export async function GET() {
         taxMode: r.tax_mode === "con_iva" ? "Con IVA" : r.tax_mode === "sin_iva" ? "Sin IVA" : "Revisar",
         category: r.category ?? "",
         active: r.active,
-        debt: roundCurrency(invoiced - paid),
+        debt: roundCurrency(invoiced - paid + supplierAdjustments.filter((row) => n(row.supplierId) === n(r.id)).reduce((sum, row) => sum + row.amount, 0)),
         invoices: `${supplierPurchases.filter((purchase: Row) => purchase.documentType !== "credit_note").length} facturas · ${supplierPurchases.filter((purchase: Row) => purchase.documentType === "credit_note").length} notas de crédito`,
         date: lastPurchase?.date ?? "Sin compras",
       };
@@ -494,6 +499,7 @@ export async function GET() {
       }) : [],
       localSales: canSeeFinancials ? (salesResult.data ?? []).map((r: Row) => ({ ...r, saleDate: r.sale_date, createdAt: r.created_at, amount: n(r.amount) })) : [],
       purchases: canSeeFinancials ? purchaseRows : [],
+      supplierAdjustments: canSeeFinancials ? supplierAdjustments : [],
       supplierPayments: canSeeFinancials ? supplierPaymentRows : [],
       rawMaterials: canSeeCosts ? materialRows.map((r: Row) => {
         const unit = String(r.cost_unit ?? "kg");
@@ -549,7 +555,7 @@ export async function POST(request: Request) {
   try {
     const { user, profile, supabase } = await context();
     const payload = await request.json() as Row;
-    const financial = ["save-expense-category","register-customer-return","register-credit-note", "register-purchase", "update-purchase", "delete-purchase", "mark-purchase-paid", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "update-supplier", "archive-supplier", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "save-client", "save-product-family", "archive-product-family", "register-customer-payment", "register-customer-adjustment", "register-expense", "pay-expense", "register-local-sale", "save-staff"];
+    const financial = ["save-expense-category","register-customer-return","register-credit-note", "register-purchase", "update-purchase", "delete-purchase", "mark-purchase-paid", "register-raw-material", "update-raw-material", "archive-raw-material", "save-supplier", "update-supplier", "archive-supplier", "register-supplier-adjustment", "register-supplier-payment", "save-recipe", "save-product-profile", "archive-product", "save-client", "save-product-family", "archive-product-family", "register-customer-payment", "register-customer-adjustment", "register-expense", "pay-expense", "register-local-sale", "save-staff"];
     if (financial.includes(String(payload.action)) && profile.role !== "administracion") return Response.json({ error: "No tenés permiso para esta operación." }, { status: 403 });
 
     if (payload.action === "save-expense-category") {
@@ -786,6 +792,28 @@ export async function POST(request: Request) {
       const saved = await supabase.from("suppliers").insert({ name, tax_mode: taxMode, category: String(supplier?.category ?? "").trim() || null, active: true }).select("*").single();
       if (saved.error) throw saved.error;
       return Response.json({ supplier: saved.data }, { status: 201 });
+    }
+
+    if (payload.action === "register-supplier-adjustment") {
+      const adjustment = payload.adjustment as Row | undefined;
+      const id = String(adjustment?.id ?? "");
+      const supplierId = Number(adjustment?.supplierId);
+      const movementDate = String(adjustment?.movementDate ?? "");
+      const concept = String(adjustment?.concept ?? "").trim();
+      const amount = roundCurrency(Number(adjustment?.amount));
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
+        || !Number.isSafeInteger(supplierId) || supplierId <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(movementDate)
+        || !concept || concept.length > 250 || !Number.isFinite(amount) || !amount || Math.abs(amount) >= 1e12) {
+        return Response.json({ error: "Completá la fecha, el concepto y un importe válido para el ajuste." }, { status: 400 });
+      }
+      const supplier = await supabase.from("suppliers").select("id").eq("id", supplierId).eq("active", true).maybeSingle();
+      if (supplier.error) throw supplier.error;
+      if (!supplier.data) return Response.json({ error: "El proveedor ya no está activo." }, { status: 404 });
+      const saved = await supabase.from("supplier_account_adjustments").upsert({
+        id, supplier_id: supplierId, movement_date: movementDate, concept, signed_amount: amount, created_by: user.id,
+      }, { onConflict: "id", ignoreDuplicates: true });
+      if (saved.error) throw saved.error;
+      return Response.json({ ok: true }, { status: 201 });
     }
 
     if (payload.action === "register-supplier-payment") {
