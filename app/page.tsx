@@ -2,6 +2,7 @@
 
 import { IssuedChecks } from "@/components/issued-checks";
 import { Orders } from "@/components/orders";
+import { ClientOrdering } from "@/components/client-ordering";
 
 import { barcodeGeometry, productionLabelHtml } from "@/lib/production-label";
 import { parsePackageWeight, presentationParts, presentationQuantityError } from "@/lib/product-inputs";
@@ -3868,7 +3869,7 @@ export default function Home() {
               }}
             />
           )}{" "}
-          {view === "productos" && <Products productFamilies={productFamilies} setProductFamilies={setProductFamilies} />} {view === "clientes" && <Clients clients={clients} setClients={setClients} productFamilies={productFamilies} />}{" "}
+          {view === "productos" && <Products productFamilies={productFamilies} setProductFamilies={setProductFamilies} />} {view === "clientes" && <div>{currentUser?.role === "administracion" && <ClientOrdering />}<Clients clients={clients} setClients={setClients} productFamilies={productFamilies} /></div>}{" "}
           {view === "cta-clientes" && <CustomerAccounts clients={clients} />}{" "}
           {view === "costos" && <Costs />}{" "}
           {view === "resultados" && <ProfitAndLoss />}{" "}

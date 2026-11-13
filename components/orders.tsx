@@ -47,8 +47,6 @@ export function Orders({ portal = false }: { portal?: boolean }) {
   const [requestedDate, setRequestedDate] = useState("");
   const [formError, setFormError] = useState("");
   const [requestId, setRequestId] = useState("");
-  const [accessClient, setAccessClient] = useState("");
-  const [accessLink, setAccessLink] = useState("");
   const refresh = useCallback(async () => {
     const workspace = await api(endpoint) as Workspace;
     setData(workspace);
@@ -115,18 +113,6 @@ export function Orders({ portal = false }: { portal?: boolean }) {
     try { await mutate({ action: "save", id: order.id, revision: order.revision, cancel: true, items: [] }, "Pedido cancelado."); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "No se pudo cancelar."); }
   }
-  async function manageAccess(revoke: boolean) {
-    if (!accessClient || busyRef.current) return;
-    const client = data?.clients.find((row) => String(row.id) === accessClient);
-    if ((revoke || client?.enabled) && !window.confirm(revoke ? "¿Deshabilitar el acceso de este cliente?" : "¿Crear un enlace nuevo? El anterior dejará de funcionar.")) return;
-    busyRef.current = true; setBusy(true); setError("");
-    try {
-      const result = await api(endpoint, { action: "access", clientId: Number(accessClient), revoke });
-      setAccessLink(result.token ? window.location.origin + "/pedidos#acceso=" + result.token : "");
-      await refresh();
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "No se pudo actualizar el acceso."); }
-    finally { busyRef.current = false; setBusy(false); }
-  }
   const orders = (data?.orders ?? []).filter((order) => filter === "todos" || ["pendiente", "parcial"].includes(order.state));
   const demandByClient = new Map<number, { name: string; products: Map<number, number> }>();
   for (const order of data?.orders ?? []) {
@@ -162,14 +148,6 @@ export function Orders({ portal = false }: { portal?: boolean }) {
       </table></div>
       {!data.plan.length && <p className="py-6 text-center text-muted-foreground">No hay producción pendiente por pedidos.</p>}
     </section>}
-    {!portal && data?.role === "administracion" && <details className={panel}>
-      <summary className="cursor-pointer font-bold">Accesos de clientes</summary>
-      <p className="my-3 text-sm text-muted-foreground">Creá un enlace privado para cada cliente y compartilo con su responsable. Quien tenga el enlace puede cargar y consultar los pedidos de ese cliente.</p>
-      <div className="flex flex-wrap gap-2"><select aria-label="Cliente para acceso" className="min-w-60 rounded-xl border bg-white p-2" value={accessClient} onChange={(event) => { setAccessClient(event.target.value); setAccessLink(""); }}>
-        <option value="">Seleccionar cliente</option>{data.clients.map((client) => <option key={client.id} value={client.id}>{client.name}{client.enabled ? " · habilitado" : ""}</option>)}
-      </select><Button disabled={busy || !accessClient} onClick={() => manageAccess(false)}>Generar enlace</Button><Button variant="outline" disabled={busy || !accessClient} onClick={() => manageAccess(true)}>Deshabilitar</Button></div>
-      {accessLink && <div className="mt-4 space-y-2"><label className="text-sm font-bold">Enlace privado<Input readOnly value={accessLink} onFocus={(event) => event.target.select()}/></label><Button variant="outline" onClick={() => navigator.clipboard.writeText(accessLink).then(() => setNotice("Enlace copiado.")).catch(() => setError("Seleccioná y copiá el enlace del campo."))}>Copiar enlace</Button></div>}
-    </details>}
     {data && <section className="space-y-3">
       <div className="flex items-center justify-between"><h2 className="text-xl font-bold">{portal ? "Historial" : "Pedidos recibidos"}</h2><select aria-label="Estado de pedidos" className="rounded-xl border bg-white p-2" value={filter} onChange={(event) => setFilter(event.target.value)}><option value="abiertos">Pendientes y parciales</option><option value="todos">Todos</option></select></div>
       {!orders.length && <div className={panel + " text-center text-muted-foreground"}><ShoppingBag className="mx-auto mb-3 size-8"/>{portal ? "Todavía no hay pedidos en esta vista." : "No hay pedidos en esta vista."}</div>}
