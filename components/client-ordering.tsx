@@ -10,9 +10,9 @@ async function request(body?: unknown) {
   if (!response.ok) throw new Error(data.error);
   return data;
 }
-export function ClientOrdering() {
+export function ClientOrdering({ customerId, onDirtyChange, onBusyChange }: { customerId: number; onDirtyChange: (value: boolean) => void; onBusyChange: (value: boolean) => void }) {
   const [clients, setClients] = useState<{ id: number; name: string; enabled: boolean }[]>([]);
-  const [clientId, setClientId] = useState("");
+  const clientId = String(customerId);
   const [catalog, setCatalog] = useState<Catalog[]>([]);
   const [selected, setSelected] = useState<number[]>([]);
   const [query, setQuery] = useState("");
@@ -23,6 +23,8 @@ export function ClientOrdering() {
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => { onBusyChange(busy); }, [busy, onBusyChange]);
   useEffect(() => { request().then(data => setClients(data.clients)).catch(e => setError(e.message)); }, []);
   useEffect(() => {
     let alive = true;
@@ -64,11 +66,8 @@ export function ClientOrdering() {
   }
   const visible = catalog.filter(p => `${p.name} ${p.presentation}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
   return <section className="mb-6 space-y-4 rounded-3xl border bg-white p-5 shadow-sm">
-    <h2 className="text-xl font-bold">Portal de pedidos · Accesos y productos por cliente</h2>
-    <p className="text-sm text-muted-foreground">Elegí el cliente y marcá los productos que puede pedir. Guardá el catálogo antes de compartir su enlace privado.</p>
-    <select aria-label="Cliente del portal" disabled={busy} className="w-full rounded-xl border p-3 sm:max-w-md" value={clientId} onChange={e => { if (!dirty || confirm("¿Descartar los cambios de catálogo sin guardar?")) setClientId(e.target.value); }}>
-      <option value="">Seleccionar cliente</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name}{c.enabled ? " · acceso habilitado" : ""}</option>)}
-    </select>
+    <h2 className="text-xl font-bold">Portal de pedidos</h2>
+    <p className="text-sm text-muted-foreground">Enlace guardado y productos habilitados de este cliente. Los cambios del catálogo se guardan con el botón de esta sección.</p>
     {error && <p role="alert" className="rounded-xl bg-red-50 p-3 text-red-800">{error}</p>}
     {notice && <p role="status" className="rounded-xl bg-emerald-50 p-3 text-emerald-800">{notice}</p>}
     {loading && <p>Cargando catálogo…</p>}

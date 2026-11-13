@@ -1695,7 +1695,10 @@ const initialClients: Client[] = [
   { id: 4, name: "Evento ocasional", kind: "Evento", discounts: normalizeProductFamilyDiscounts({}), returnable: false, billingWeight: "Bruto", active: true },
 ];
 
-function Clients({ clients, setClients, productFamilies }: { clients: Client[]; setClients: StateDispatch<SetStateAction<Client[]>>; productFamilies: ProductFamilyDefinition[] }) {
+function Clients({ clients, setClients, productFamilies, canManagePortal }: { canManagePortal: boolean; clients: Client[]; setClients: StateDispatch<SetStateAction<Client[]>>; productFamilies: ProductFamilyDefinition[] }) {
+  const [portalDirty, setPortalDirty] = useState(false);
+  const [portalBusy, setPortalBusy] = useState(false);
+  const closeClient = () => { if (!portalBusy && (!portalDirty || confirm("¿Descartar los cambios de productos sin guardar?"))) { setEditing(null); setPortalDirty(false); } };
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<Client | null>(null);
   const [saving, setSaving] = useState(false);
@@ -1801,8 +1804,8 @@ function Clients({ clients, setClients, productFamilies }: { clients: Client[]; 
           </TableBody>
         </Table>
       </div>
-      <Dialog open={Boolean(editing)} onOpenChange={(open) => !open && setEditing(null)}>
-        <DialogContent className="sm:max-w-xl">
+      <Dialog open={Boolean(editing)} onOpenChange={(open) => !open && closeClient()}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl" onPointerDownOutside={event => event.preventDefault()}>
           <DialogHeader>
             <DialogTitle>{editing && clients.some((client) => client.id === editing.id) ? "Editar cliente" : "Nuevo cliente"}</DialogTitle>
             <DialogDescription>
@@ -1864,11 +1867,14 @@ function Clients({ clients, setClients, productFamilies }: { clients: Client[]; 
               </label>
             </div>
           )}
+          {canManagePortal && editing && editing.id > 0 && <ClientOrdering key={editing.id} customerId={editing.id} onDirtyChange={setPortalDirty} onBusyChange={setPortalBusy} />}
+          {canManagePortal && editing?.id === 0 && <p className="text-sm text-muted-foreground">Guardá primero el cliente para configurar su enlace y productos.</p>}
+          {portalDirty && <p className="text-sm text-amber-800">Guardá los productos habilitados antes de guardar y cerrar la ficha.</p>}
           {saveError && editing && <p className="text-sm font-bold text-red-600">{saveError}</p>}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setEditing(null)}>Cancelar</Button>
+            <Button variant="outline" disabled={portalBusy} onClick={closeClient}>Cerrar</Button>
             <Button
-              disabled={saving || !editing?.name.trim()}
+              disabled={saving || portalBusy || portalDirty || !editing?.name.trim()}
               className="bg-[#ed94b5] font-black text-[#3c2931] hover:bg-[#f2a8c3]"
               onClick={saveClient}
             >
@@ -3869,7 +3875,7 @@ export default function Home() {
               }}
             />
           )}{" "}
-          {view === "productos" && <Products productFamilies={productFamilies} setProductFamilies={setProductFamilies} />} {view === "clientes" && <div>{currentUser?.role === "administracion" && <ClientOrdering />}<Clients clients={clients} setClients={setClients} productFamilies={productFamilies} /></div>}{" "}
+          {view === "productos" && <Products productFamilies={productFamilies} setProductFamilies={setProductFamilies} />} {view === "clientes" && <Clients clients={clients} setClients={setClients} productFamilies={productFamilies} canManagePortal={currentUser?.role === "administracion"} />}{" "}
           {view === "cta-clientes" && <CustomerAccounts clients={clients} />}{" "}
           {view === "costos" && <Costs />}{" "}
           {view === "resultados" && <ProfitAndLoss />}{" "}
