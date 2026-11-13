@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 type Product = { id: number; code?: string; name: string; presentation: string };
 type Item = Product & { quantity: number; delivered: number; remaining: number };
 type Order = {
-  id: string; number: number; client: string; date: string; revision: number;
+  id: string; number: number; clientId: number; client: string; date: string; revision: number;
   state: string; items: Item[]; note: string; requestedDate: string | null; remittances: string[];
 };
 type Workspace = {
@@ -128,6 +128,20 @@ export function Orders({ portal = false }: { portal?: boolean }) {
     finally { busyRef.current = false; setBusy(false); }
   }
   const orders = (data?.orders ?? []).filter((order) => filter === "todos" || ["pendiente", "parcial"].includes(order.state));
+  const demandByClient = new Map<number, { name: string; products: Map<number, number> }>();
+  for (const order of data?.orders ?? []) {
+    if (!["pendiente", "parcial"].includes(order.state)) continue;
+    for (const item of order.items) {
+      if (item.remaining <= 0) continue;
+      let client = demandByClient.get(order.clientId);
+      if (!client) {
+        client = { name: order.client, products: new Map() };
+        demandByClient.set(order.clientId, client);
+      }
+      client.products.set(item.id, (client.products.get(item.id) ?? 0) + item.remaining);
+    }
+  }
+  const demandClients = [...demandByClient.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name, "es"));
 
   return <div className="space-y-6">
     <div className="flex flex-wrap items-center justify-between gap-4">
@@ -141,10 +155,10 @@ export function Orders({ portal = false }: { portal?: boolean }) {
     {notice && <p role="status" className="rounded-xl bg-emerald-50 p-4 text-emerald-800">{notice}</p>}
     {!portal && data && <section className={panel}>
       <h2 className="mb-1 text-xl font-bold">Qué tenemos que producir</h2>
-      <p className="mb-4 text-sm text-muted-foreground">Cantidades por presentación. Los pedidos entran al cálculo al enviarse y los nuevos remitos descuentan las entregas del pedido más antiguo de ese cliente.</p>
+      <p className="mb-4 text-sm text-muted-foreground">Pedidos pendientes de entrega por cliente, en baldes, vasquetas o cajas. A producir = suma de los pedidos pendientes menos el stock disponible, con mínimo cero.</p>
       <div className="overflow-x-auto"><table className="w-full text-left text-sm">
-        <thead><tr className="border-b"><th className="py-3">Producto</th><th>Presentación</th><th className="text-right">Pendiente</th><th className="text-right">En cámara</th><th className="text-right">A producir</th></tr></thead>
-        <tbody>{data.plan.map((row) => <tr key={row.id} className="border-b last:border-0"><td className="py-3 font-semibold">{row.name}</td><td>{row.presentation}</td><td className="text-right">{row.requested}</td><td className="text-right">{row.available}</td><td className="text-right font-black text-[#ad416a]">{row.toProduce}</td></tr>)}</tbody>
+        <thead><tr className="border-b"><th scope="col" className="min-w-52 py-3 pr-4">Producto / sabor</th><th scope="col" className="min-w-32 px-4 text-right">Stock disponible</th>{demandClients.map(([id, client]) => <th scope="col" key={id} className="min-w-36 px-4 text-right">{client.name}</th>)}<th scope="col" className="min-w-32 px-4 text-right">A producir</th></tr></thead>
+        <tbody>{data.plan.map((row) => <tr key={row.id} className="border-b last:border-0"><th scope="row" className="py-3 pr-4 font-semibold">{row.name}<span className="block text-xs font-normal text-muted-foreground">{row.presentation}</span></th><td className="px-4 text-right tabular-nums">{row.available}</td>{demandClients.map(([id, client]) => <td key={id} className="px-4 text-right tabular-nums">{client.products.get(row.id) ?? 0}</td>)}<td className="bg-pink-50 px-4 text-right font-black tabular-nums text-[#ad416a]">{row.toProduce}</td></tr>)}</tbody>
       </table></div>
       {!data.plan.length && <p className="py-6 text-center text-muted-foreground">No hay producción pendiente por pedidos.</p>}
     </section>}
