@@ -1803,7 +1803,1725 @@ function Clients({ clients, setClients, productFamilies }: { clients: Client[]; 
       <Dialog open={Boolean(editing)} onOpenChange={(open) => !open && setEditing(null)}>
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
-            <DialogTitle>{editing && clients.some((client) => client.id === editing.id) ? "Editar cliente" : "Nuevo cliente"}</DialogT…39167 tokens truncated…t-xl font-black">Consumo por proveedor</h3><p className="text-sm text-muted-foreground">Cuánto se compró a cada proveedor en el rango seleccionado.</p></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Proveedor</TableHead><TableHead className="text-right">Importe</TableHead><TableHead className="text-right">% del total</TableHead></TableRow></TableHeader><TableBody>{expenseBySupplier.length === 0 && <TableRow><TableCell colSpan={3} className="py-10 text-center text-muted-foreground">No hay proveedores para estos filtros.</TableCell></TableRow>}{expenseBySupplier.map((row) => <TableRow key={row.supplier}><TableCell className="font-bold">{row.supplier}</TableCell><TableCell className="text-right font-black">{money(row.amount)}</TableCell><TableCell className="text-right text-muted-foreground">{expenseAnalysisTotal ? (row.amount / expenseAnalysisTotal * 100).toLocaleString("es-AR", { maximumFractionDigits: 1 }) : "0"}%</TableCell></TableRow>)}</TableBody></Table></div></div>
+            <DialogTitle>{editing && clients.some((client) => client.id === editing.id) ? "Editar cliente" : "Nuevo cliente"}</DialogTitle>
+            <DialogDescription>
+              Estas reglas se aplicarán automáticamente cuando se prepare el remito.
+            </DialogDescription>
+          </DialogHeader>
+          {editing && (
+            <div className="grid gap-4 py-2 sm:grid-cols-2">
+              <label className="space-y-2 text-sm font-bold sm:col-span-2">
+                Nombre o razón social
+                <Input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} className="font-normal" />
+              </label>
+              <label className="space-y-2 text-sm font-bold">
+                Tipo de cliente
+                <select value={editing.kind} onChange={(event) => setEditing({ ...editing, kind: event.target.value })} className="h-10 w-full rounded-md border bg-white px-3 font-normal">
+                  <option>Franquicia</option>
+                  <option>Sucursal propia</option>
+                  <option>Evento</option>
+                  <option>Mayorista</option>
+                </select>
+              </label>
+              <div className="rounded-xl border bg-[#fff8fb] p-4 sm:col-span-2">
+                <p className="mb-3 text-sm font-black">Descuento por línea de producto</p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {productFamilies.map((family) => (
+                    <label key={family.discountKey} className="space-y-1 text-sm font-bold">
+                      {family.label} (%)
+                      <Input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={editing.discounts[family.discountKey]}
+                        onChange={(event) => setEditing({
+                          ...editing,
+                          discounts: { ...editing.discounts, [family.discountKey]: Number(event.target.value) },
+                        })}
+                        className="font-normal"
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center justify-between rounded-xl border p-4 sm:col-span-2">
+                <div>
+                  <p className="text-sm font-bold">Envase retornable</p>
+                  <p className="text-xs text-muted-foreground">Si devuelve baldes, se factura solamente el peso neto.</p>
+                </div>
+                <Switch
+                  checked={editing.returnable}
+                  onCheckedChange={(checked) => setEditing({ ...editing, returnable: checked, billingWeight: checked ? "Neto" : "Bruto" })}
+                />
+              </div>
+              <label className="space-y-2 text-sm font-bold sm:col-span-2">
+                Peso que se factura
+                <select value={editing.billingWeight} onChange={(event) => setEditing({ ...editing, billingWeight: event.target.value as "Neto" | "Bruto" })} className="h-10 w-full rounded-md border bg-white px-3 font-normal">
+                  <option value="Neto">Neto: solamente el helado</option>
+                  <option value="Bruto">Bruto: helado más envase</option>
+                </select>
+              </label>
+            </div>
+          )}
+          {saveError && editing && <p className="text-sm font-bold text-red-600">{saveError}</p>}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditing(null)}>Cancelar</Button>
+            <Button
+              disabled={saving || !editing?.name.trim()}
+              className="bg-[#ed94b5] font-black text-[#3c2931] hover:bg-[#f2a8c3]"
+              onClick={saveClient}
+            >
+              {saving ? "Guardando…" : "Guardar cliente"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </section>
+  );
+}
+
+type CustomerReturnReceipt = { id: number; amount: number; reason: string; comment: string; received_by: string; created_at: string };
+
+type RemittanceItem = {
+  returnedAt?: string | null;
+  returnReceipt?: CustomerReturnReceipt | null;
+  uniqueCode: string;
+  productCode: string;
+  productName: string;
+  presentation: string;
+  container: string;
+  family: string;
+  weightKg: number | null;
+  units: number | null;
+  unitPrice: number;
+  discountPct: number;
+  lineTotal: number;
+};
+
+type RemittanceRecord = {
+  id: number;
+  remittanceNumber: string;
+  clientId: number;
+  clientName: string;
+  totalKg: number;
+  subtotal: number;
+  discountTotal: number;
+  total: number;
+  status: string;
+  createdAt: string;
+  items: RemittanceItem[];
+};
+
+function printRemittanceA4(remittance: RemittanceRecord) {
+  const printWindow = window.open("", "munna-remittance-a4", "popup,width=1000,height=850");
+  if (!printWindow) return;
+
+  const escapeHtml = (value: unknown) => String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+  const formatMoney = (value: number) => new Intl.NumberFormat("es-AR", {
+    style: "currency",
+    currency: "ARS",
+    maximumFractionDigits: 0,
+  }).format(Number(value ?? 0));
+  const formatNumber = (value: number) => Number(value ?? 0).toLocaleString("es-AR", {
+    minimumFractionDigits: 3,
+    maximumFractionDigits: 3,
+  });
+  const formatQuantity = (item: RemittanceItem) => item.weightKg != null
+    ? `${formatNumber(item.weightKg)} kg netos`
+    : `${Number(item.units ?? 0).toLocaleString("es-AR")} unidades`;
+  const rows = remittance.items.map((item) => `
+    <tr>
+      <td class="code">${escapeHtml(item.uniqueCode)}</td>
+      <td class="product">
+        <strong>${escapeHtml(item.productName)}</strong><span class="detail"> · ${escapeHtml(item.productCode)} · ${escapeHtml(item.presentation || item.container)}</span>
+      </td>
+      <td>${escapeHtml(formatQuantity(item))}</td>
+      <td class="number">${escapeHtml(Number(item.discountPct).toLocaleString("es-AR", { maximumFractionDigits: 2 }))}%</td>
+      <td class="number">${escapeHtml(formatMoney(item.lineTotal))}</td>
+    </tr>`).join("");
+  const status = String(remittance.status ?? "").toLowerCase().includes("anul") ? "ANULADO" : "CONFIRMADO";
+  const date = new Date(remittance.createdAt).toLocaleString("es-AR");
+  const totalKg = formatNumber(remittance.totalKg);
+  const densityClass = remittance.items.length >= 36
+    ? "ultra-compact"
+    : remittance.items.length >= 28
+      ? "compact"
+      : "";
+
+  printWindow.document.open();
+  printWindow.document.write(`<!doctype html>
+    <html lang="es">
+      <head>
+        <meta charset="utf-8">
+        <title>Remito ${escapeHtml(remittance.remittanceNumber)}</title>
+        <style>
+          @page { size: A4 portrait; margin: 8mm; }
+          * { box-sizing: border-box; }
+          html, body { margin: 0; padding: 0; background: #fff; color: #111; font-family: Arial, Helvetica, sans-serif; font-size: 7pt; }
+          .sheet { width: 100%; }
+          .header { display: grid; grid-template-columns: 1fr auto; align-items: start; gap: 5mm; padding-bottom: 2mm; border-bottom: 1.5px solid #111; }
+          .logo { width: 52mm; height: 11mm; object-fit: cover; object-position: center 42%; filter: grayscale(1) brightness(.55) contrast(1000%); }
+          .company { margin-top: .8mm; color: #222; font-size: 5.8pt; line-height: 1.15; }
+          .document { min-width: 45mm; border: 1.5px solid #111; padding: 1.5mm 2mm; text-align: right; }
+          .document .type { font-size: 6.5pt; font-weight: 700; letter-spacing: 1px; }
+          .document .number { margin-top: .4mm; font-family: "Courier New", monospace; font-size: 10.5pt; font-weight: 800; }
+          .document .status { display: inline-block; margin-top: .7mm; padding: .4mm 1.3mm; border: 1px solid #111; font-size: 5.5pt; font-weight: 700; }
+          .meta { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 0; margin: 2mm 0; border: 1px solid #111; }
+          .meta > div { min-height: 9mm; padding: 1.2mm; border-right: 1px solid #111; }
+          .meta > div:last-child { border-right: 0; }
+          .label { display: block; margin-bottom: .4mm; color: #333; font-size: 5.4pt; font-weight: 700; letter-spacing: .35px; text-transform: uppercase; }
+          .value { font-size: 7pt; font-weight: 700; }
+          table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+          thead { display: table-header-group; }
+          th { padding: 1mm .8mm; border-top: 1.5px solid #111; border-bottom: 1.5px solid #111; background: #eee; text-align: left; font-size: 5.8pt; line-height: 1; text-transform: uppercase; }
+          td { padding: .8mm .8mm; border-bottom: .6px solid #777; vertical-align: middle; font-size: 6.6pt; line-height: 1.05; }
+          tr { break-inside: avoid; page-break-inside: avoid; }
+          th:nth-child(1), td:nth-child(1) { width: 18mm; }
+          th:nth-child(3), td:nth-child(3) { width: 28mm; }
+          th:nth-child(4), td:nth-child(4) { width: 21mm; }
+          th:nth-child(5), td:nth-child(5) { width: 27mm; }
+          .product { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+          .detail { color: #444; font-size: 5.6pt; font-weight: 400; }
+          .code { font-family: "Courier New", monospace; font-weight: 700; }
+          .number { text-align: right; white-space: nowrap; }
+          .summary { width: 60mm; margin: 2mm 0 0 auto; border: 1px solid #111; break-inside: avoid; page-break-inside: avoid; }
+          .summary-row { display: flex; justify-content: space-between; gap: 5mm; padding: .8mm 1.5mm; border-bottom: 1px solid #999; font-size: 6.5pt; }
+          .summary-row:last-child { border-bottom: 0; background: #eee; font-size: 8.5pt; font-weight: 800; }
+          .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 14mm; margin-top: 9mm; break-inside: avoid; page-break-inside: avoid; }
+          .signature { padding-top: 1mm; border-top: 1px solid #111; text-align: center; font-size: 6pt; }
+          .footer { margin-top: 3mm; padding-top: 1mm; border-top: 1px solid #777; color: #444; font-size: 5.5pt; text-align: center; break-inside: avoid; page-break-inside: avoid; }
+          body.compact td { padding: .55mm .7mm; font-size: 6.1pt; line-height: 1; }
+          body.compact .detail { font-size: 5.2pt; }
+          body.ultra-compact td { padding: .35mm .6mm; font-size: 5.7pt; line-height: 1; }
+          body.ultra-compact .detail { display: none; }
+          body.ultra-compact .summary-row { padding: .6mm 1.3mm; }
+          body.ultra-compact .signatures { margin-top: 7mm; }
+          @media print {
+            html, body { width: auto; height: auto; }
+            .sheet { page-break-after: auto; }
+          }
+        </style>
+      </head>
+      <body class="${densityClass}">
+        <main class="sheet">
+          <header class="header">
+            <div>
+              <img class="logo" src="${window.location.origin}/munna-laboratorio.jpg" alt="Münna">
+              <div class="company">
+                Planta: Juan B. Justo 1531 · Pergamino, Buenos Aires<br>
+                Tel. 2477 667357
+              </div>
+            </div>
+            <div class="document">
+              <div class="type">REMITO</div>
+              <div class="number">${escapeHtml(remittance.remittanceNumber)}</div>
+              <div class="status">${status}</div>
+            </div>
+          </header>
+
+          <section class="meta">
+            <div><span class="label">Destino</span><span class="value">${escapeHtml(remittance.clientName)}</span></div>
+            <div><span class="label">Fecha y hora</span><span class="value">${escapeHtml(date)}</span></div>
+            <div><span class="label">Peso neto total</span><span class="value">${escapeHtml(totalKg)} kg</span></div>
+          </section>
+
+          <table>
+            <thead>
+              <tr><th>Código</th><th>Producto</th><th>Peso / cantidad</th><th class="number">Descuento</th><th class="number">Importe final</th></tr>
+            </thead>
+            <tbody>${rows || '<tr><td colspan="5">Sin productos registrados.</td></tr>'}</tbody>
+          </table>
+
+          <section class="summary">
+            <div class="summary-row"><span>Subtotal</span><strong>${escapeHtml(formatMoney(remittance.subtotal))}</strong></div>
+            <div class="summary-row"><span>Descuentos</span><strong>- ${escapeHtml(formatMoney(remittance.discountTotal))}</strong></div>
+            <div class="summary-row"><span>Total</span><strong>${escapeHtml(formatMoney(remittance.total))}</strong></div>
+          </section>
+
+          <section class="signatures">
+            <div class="signature">Entregó · Firma y aclaración</div>
+            <div class="signature">Recibió · Firma y aclaración</div>
+          </section>
+
+          <footer class="footer">Münna Gelateria · Remito generado por Sistema ORG</footer>
+        </main>
+      </body>
+    </html>`);
+  printWindow.document.close();
+
+  const openDialog = () => {
+    printWindow.focus();
+    printWindow.print();
+  };
+  const logo = printWindow.document.querySelector("img");
+  if (logo && !logo.complete) {
+    logo.addEventListener("load", () => window.setTimeout(openDialog, 150), { once: true });
+    logo.addEventListener("error", () => window.setTimeout(openDialog, 150), { once: true });
+  } else {
+    window.setTimeout(openDialog, 250);
+  }
+}
+
+function printCustomerReturn(remittance: RemittanceRecord, item: RemittanceItem) {
+  const receipt = item.returnReceipt;
+  if (!receipt) return;
+  const popup = window.open("", "munna-return-note", "popup,width=900,height=750");
+  if (!popup) return;
+  const escape = (value: unknown) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+  const number = "NC-D-" + String(receipt.id).padStart(6, "0");
+  const quantity = item.weightKg != null ? item.weightKg + " kg" : item.units + " unidades";
+  popup.document.write('<html><head><meta charset="utf-8"><title>' + number + '</title><style>body{font-family:Arial,sans-serif;padding:35px;color:#222}h1{font-size:24px}table{border-collapse:collapse;width:100%;margin:24px 0}td,th{border:1px solid #ccc;padding:12px;text-align:left}p{line-height:1.6}.total{text-align:right;font-size:22px}</style></head><body><h1>Münna · Nota de crédito interna ' + number + '</h1><p>Cliente: <b>' + escape(remittance.clientName) + '</b><br>Remito original: ' + escape(remittance.remittanceNumber) + '<br>Fecha de devolución: ' + escape(new Date(receipt.created_at).toLocaleString("es-AR")) + '</p><table><tr><th>Código</th><th>Producto</th><th>Contenido devuelto</th><th>Crédito</th></tr><tr><td>' + escape(item.uniqueCode) + '</td><td>' + escape(item.productName) + '</td><td>' + escape(quantity) + '</td><td>' + escape(money(Number(receipt.amount))) + '</td></tr></table><p>Motivo: ' + escape(receipt.reason) + '<br>Comentario: ' + escape(receipt.comment || "Sin comentario") + '<br>Recibió: ' + escape(receipt.received_by) + '<br>Destino: reingreso de la unidad completa al stock de cámara.</p><p class="total">Total acreditado: <b>' + escape(money(Number(receipt.amount))) + '</b></p><p>Comprobante interno de devolución. No es un comprobante fiscal.</p></body></html>');
+  popup.document.close(); popup.focus(); popup.print();
+}
+
+function Remittances({ productionRows, canReturn, onReturned }: { productionRows: ProductionHistoryRow[]; canReturn: boolean; onReturned: () => Promise<void> }) {
+  const [rows, setRows] = useState<RemittanceRecord[]>([]);
+  const [selected, setSelected] = useState<RemittanceRecord | null>(null);
+  const [query, setQuery] = useState("");
+  const [returnOpen, setReturnOpen] = useState(false);
+  const [returnCode, setReturnCode] = useState("");
+  const [returnReason, setReturnReason] = useState("");
+  const [returnComment, setReturnComment] = useState("");
+  const [receivedComplete, setReceivedComplete] = useState(false);
+  const [returnSaving, setReturnSaving] = useState(false);
+  const [returnError, setReturnError] = useState("");
+  const [returnNotice, setReturnNotice] = useState("");
+  const returnItem = selected?.items.find((item) => item.uniqueCode.toUpperCase() === returnCode.trim().toUpperCase());
+  const saveReturn = async () => {
+    if (!selected || !returnItem || returnSaving) return;
+    setReturnSaving(true); setReturnError("");
+    try {
+      const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "register-customer-return", dispatchId: selected.id, uniqueCode: returnItem.uniqueCode, reason: returnReason, comment: returnComment, receivedComplete }) });
+      const result = await response.json() as { error?: string; receipt?: { creditNoteNumber: string; amount: number } };
+      if (!response.ok) throw new Error(result.error ?? "No se pudo registrar la devolución.");
+      setReturnOpen(false);
+      setReturnNotice((result.receipt?.creditNoteNumber ?? "Nota de crédito interna") + " registrada por " + money(Number(result.receipt?.amount ?? 0)) + ". La unidad volvió al stock de cámara.");
+      const refreshed = await fetch("/api/operations");
+      const data = await refreshed.json() as { remittances?: RemittanceRecord[]; error?: string };
+      if (!refreshed.ok) throw new Error("La devolución se guardó, pero no se pudo actualizar la pantalla. Recargá la página.");
+      setRows(data.remittances ?? []);
+      setSelected((data.remittances ?? []).find((row) => row.id === selected.id) ?? null);
+      await onReturned();
+    } catch (error) { setReturnError(error instanceof Error ? error.message : "No se pudo registrar la devolución."); }
+    finally { setReturnSaving(false); }
+  };
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    fetch("/api/operations")
+      .then(async (response) => {
+        const data = await response.json() as { remittances?: RemittanceRecord[]; error?: string };
+        if (!response.ok) throw new Error(data.error ?? "No se pudieron cargar los remitos.");
+        if (active) setRows(data.remittances ?? []);
+      })
+      .catch((loadError) => active && setError(loadError instanceof Error ? loadError.message : "No se pudieron cargar los remitos."))
+      .finally(() => active && setLoading(false));
+    return () => { active = false; };
+  }, []);
+  const historyRemittances = Object.values(productionRows
+    .filter((row) => row.status === "despachado" && row.remittanceNumber)
+    .reduce<Record<string, RemittanceRecord>>((groups, row) => {
+      const number = row.remittanceNumber as string;
+      groups[number] ??= {
+        id: row.id,
+        remittanceNumber: number,
+        clientId: 0,
+        clientName: row.clientName ?? "Sin destino",
+        totalKg: 0,
+        subtotal: 0,
+        discountTotal: 0,
+        total: 0,
+        status: "emitido",
+        createdAt: row.dispatchedAt ?? row.producedAt,
+        items: [],
+      };
+      groups[number].totalKg += Number(row.weightKg ?? 0);
+      groups[number].items.push({
+        uniqueCode: row.uniqueCode,
+        productCode: row.productCode,
+        productName: row.productName,
+        presentation: row.presentation,
+        container: row.container,
+        family: "",
+        weightKg: row.weightKg,
+        units: row.units,
+        unitPrice: 0,
+        discountPct: 0,
+        lineTotal: 0,
+      });
+      return groups;
+    }, {}));
+  const mergedByNumber = new Map(historyRemittances.map((row) => [row.remittanceNumber, row]));
+  rows.forEach((row) => {
+    const historical = mergedByNumber.get(row.remittanceNumber);
+    mergedByNumber.set(row.remittanceNumber, {
+      ...historical,
+      ...row,
+      items: row.items?.length ? row.items : historical?.items ?? [],
+    });
+  });
+  const mergedRows = Array.from(mergedByNumber.values()).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const normalizedQuery = query.trim().toLowerCase();
+  const compactQuery = normalizedQuery.replace(/[^a-z0-9]/g, "");
+  const filtered = mergedRows.filter((remittance) => {
+    const itemText = remittance.items.map((item) => `${item.uniqueCode} ${item.productCode} ${item.productName}`).join(" ");
+    const haystack = `${remittance.remittanceNumber} ${remittance.clientName} ${itemText}`.toLowerCase();
+    return !normalizedQuery || haystack.includes(normalizedQuery) || haystack.replace(/[^a-z0-9]/g, "").includes(compactQuery);
+  });
+  const showLoading = loading && mergedRows.length === 0;
+  const statusLabel = (status: string) => String(status ?? "").toLowerCase().includes("anul") ? "Anulado" : "Confirmado";
+  const quantityLabel = (item: RemittanceItem) => item.weightKg != null
+    ? `${Number(item.weightKg).toLocaleString("es-AR", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg netos`
+    : `${item.units ?? 0} unidades`;
+  return (
+    <section className="rounded-[26px] border bg-white p-5 shadow-sm">
+      <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h2 className="text-2xl font-black">Remitos</h2>
+          <p className="text-sm text-muted-foreground">Historial real de despachos, detalle y reimpresión.</p>
+        </div>
+        <div className="relative w-full sm:max-w-sm">
+          <Search className="absolute left-3 top-3 size-4 text-muted-foreground" />
+          <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar remito, cliente, producto o código" className="pl-9" />
+        </div>
+      </div>
+      {error && mergedRows.length === 0 && <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">{error}</div>}
+      <div className="overflow-hidden rounded-2xl border">
+        <Table>
+          <TableHeader className="bg-[#fff4f8]">
+            <TableRow>
+              <TableHead>Número</TableHead>
+              <TableHead>Fecha</TableHead>
+              <TableHead>Cliente</TableHead>
+              <TableHead>Códigos</TableHead>
+              <TableHead>Kg</TableHead>
+              <TableHead>Descuento</TableHead>
+              <TableHead className="text-right">Total</TableHead>
+              <TableHead className="text-right">Acciones</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {showLoading && <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">Cargando remitos…</TableCell></TableRow>}
+            {!showLoading && filtered.length === 0 && <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">{query ? "No hay remitos que coincidan con la búsqueda." : "Todavía no hay remitos generados."}</TableCell></TableRow>}
+            {!showLoading && filtered.map((remittance) => (
+              <TableRow key={remittance.id}>
+                <TableCell className="font-mono font-bold">{remittance.remittanceNumber}</TableCell>
+                <TableCell>{new Date(remittance.createdAt).toLocaleString("es-AR", { dateStyle: "short", timeStyle: "short" })}</TableCell>
+                <TableCell className="font-bold">{remittance.clientName}</TableCell>
+                <TableCell>{remittance.items.length}</TableCell>
+                <TableCell>{Number(remittance.totalKg).toLocaleString("es-AR", { minimumFractionDigits: 3, maximumFractionDigits: 3 })}</TableCell>
+                <TableCell>{remittance.discountTotal > 0 ? money(remittance.discountTotal) : "Sin descuento"}</TableCell>
+                <TableCell className="text-right font-black">{money(remittance.total)}</TableCell>
+                <TableCell className="text-right">
+                  <Button variant="outline" size="sm" className="rounded-lg" onClick={() => setSelected(remittance)}>Ver remito</Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+      <Dialog open={Boolean(selected)} onOpenChange={(open) => !open && setSelected(null)}>
+        <DialogContent className="print-remittance-dialog max-h-[90vh] overflow-y-auto sm:max-w-4xl">
+          {selected && (
+            <>
+              <DialogHeader>
+                <DialogTitle>Remito {selected.remittanceNumber}</DialogTitle>
+                <DialogDescription>{selected.clientName} · {new Date(selected.createdAt).toLocaleString("es-AR")}</DialogDescription>
+              </DialogHeader>
+              {returnError && !returnOpen && <p role="alert" className="text-sm text-red-700">{returnError}</p>}
+              {returnNotice && <p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm text-emerald-800">{returnNotice}</p>}
+              <div id="print-remittance" className="rounded-2xl border bg-white p-5 text-black">
+                <div className="flex items-start justify-between border-b-2 border-black pb-4">
+                  <div className="relative h-12 w-60 overflow-hidden">
+                    <Image
+                      src="/munna-laboratorio.jpg"
+                      fill
+                      sizes="240px"
+                      alt="Münna"
+                      className="logo-monochrome object-cover"
+                      style={{ objectPosition: "center 42%" }}
+                    />
+                  </div>
+                  <div className="text-right">
+                    <div className="text-xs font-bold uppercase">Remito</div>
+                    <div className="font-mono text-xl font-black">{selected.remittanceNumber}</div>
+                    <Badge className="mt-1 bg-emerald-100 text-emerald-800 hover:bg-emerald-100">{statusLabel(selected.status)}</Badge>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4 border-b py-4 text-sm sm:grid-cols-3">
+                  <div><span className="block text-xs font-bold uppercase text-muted-foreground">Destino</span><b>{selected.clientName}</b></div>
+                  <div><span className="block text-xs font-bold uppercase text-muted-foreground">Fecha</span><b>{new Date(selected.createdAt).toLocaleString("es-AR")}</b></div>
+                  <div><span className="block text-xs font-bold uppercase text-muted-foreground">Peso neto total</span><b>{Number(selected.totalKg).toLocaleString("es-AR", { minimumFractionDigits: 3, maximumFractionDigits: 3 })} kg</b></div>
+                </div>
+                <Table>
+                  <TableHeader>
+                    <TableRow><TableHead>Código</TableHead><TableHead>Producto</TableHead><TableHead>Peso / cantidad</TableHead><TableHead>Descuento</TableHead><TableHead className="text-right">Importe final</TableHead></TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {selected.items.map((item) => (
+                      <TableRow key={item.uniqueCode}>
+                        <TableCell className="font-mono font-bold">{item.uniqueCode}</TableCell>
+                        <TableCell><b>{item.productName}</b><div className="text-xs text-muted-foreground">{item.productCode} · {item.presentation || item.container}</div></TableCell>
+                        <TableCell>{quantityLabel(item)}{item.returnedAt && <div className="mt-1 text-xs font-bold text-amber-700">Devuelto completo · {new Date(item.returnedAt).toLocaleDateString("es-AR")}{item.returnReceipt && <Button size="sm" variant="ghost" onClick={() => printCustomerReturn(selected, item)}>Imprimir NC-D-{String(item.returnReceipt.id).padStart(6, "0")}</Button>}</div>}</TableCell>
+                        <TableCell>{Number(item.discountPct).toLocaleString("es-AR", { maximumFractionDigits: 2 })}%</TableCell>
+                        <TableCell className="text-right">{money(item.lineTotal)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                <div className="ml-auto mt-5 max-w-sm space-y-2 text-sm">
+                  <div className="flex justify-between"><span>Subtotal</span><b>{money(selected.subtotal)}</b></div>
+                  <div className="flex justify-between"><span>Descuentos aplicados</span><b>- {money(selected.discountTotal)}</b></div>
+                  <div className="flex justify-between border-t-2 border-black pt-3 text-lg"><span>Total</span><b>{money(selected.total)}</b></div>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setSelected(null)}>Cerrar</Button>
+                {canReturn && !selected.status.toLowerCase().includes("anul") && selected.items.some((item) => !item.returnedAt) && <Button variant="outline" onClick={() => { setReturnCode(""); setReturnReason(""); setReturnComment(""); setReceivedComplete(false); setReturnError(""); setReturnNotice(""); setReturnOpen(true); }}>Registrar devolución</Button>}
+                <Button onClick={() => printRemittanceA4(selected)} className="bg-[#3c2931] text-white"><Printer /> Imprimir remito A4</Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+      <Dialog open={returnOpen} onOpenChange={(open) => { if (!returnSaving) setReturnOpen(open); }}>
+        <DialogContent className="sm:max-w-lg"><DialogHeader><DialogTitle>Devolución completa</DialogTitle><DialogDescription>{selected?.clientName} · {selected?.remittanceNumber}. Se acredita el importe original y vuelve al stock la misma unidad o caja completa.</DialogDescription></DialogHeader>
+          <div className="space-y-4">
+            <label className="block text-sm font-bold">Escanear código de la unidad<Input autoFocus value={returnCode} disabled={returnSaving} onChange={(event) => setReturnCode(event.target.value)} placeholder="Código de barras de la unidad devuelta" onKeyDown={(event) => { if (event.key === "Enter") event.preventDefault(); }} /></label>
+            {returnCode.trim() && !returnItem && <p className="text-sm text-red-700">Este código no pertenece al remito seleccionado.</p>}
+            {returnItem && <div className="rounded-xl border bg-[#fff5f8] p-3 text-sm"><b>{returnItem.productName}</b><p>{quantityLabel(returnItem)} · Crédito: {money(returnItem.lineTotal)}</p>{returnItem.returnedAt && <p className="font-bold text-red-700">Esta unidad ya fue devuelta en este remito.</p>}</div>}
+            <label className="block text-sm font-bold">Motivo<select className="mt-1 h-10 w-full rounded-md border bg-white px-3" value={returnReason} disabled={returnSaving} onChange={(event) => setReturnReason(event.target.value)}><option value="">Elegí un motivo</option><option>No entró en el freezer</option><option>Pedido incorrecto</option><option>Otro</option></select></label>
+            <label className="block text-sm font-bold">Comentario {returnReason === "Otro" ? "(obligatorio)" : "(opcional)"}<Textarea value={returnComment} maxLength={2000} disabled={returnSaving} onChange={(event) => setReturnComment(event.target.value)} /></label>
+            <label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={receivedComplete} disabled={returnSaving} onChange={(event) => setReceivedComplete(event.target.checked)} />Recibí la unidad completa, como se entregó, y está apta para volver al stock de cámara.</label>
+            <p className="text-xs text-muted-foreground">Genera una nota de crédito interna en la cuenta corriente del cliente.</p>
+            {returnError && <p role="alert" className="text-sm text-red-700">{returnError}</p>}
+          </div>
+          <DialogFooter><Button variant="outline" disabled={returnSaving} onClick={() => setReturnOpen(false)}>Cancelar</Button><Button className="bg-[#3c2931] text-white" disabled={returnSaving || !returnItem || !!returnItem.returnedAt || !receivedComplete || !returnReason || (returnReason === "Otro" && !returnComment.trim())} onClick={saveReturn}>{returnSaving ? "Guardando…" : "Confirmar crédito y reingreso"}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </section>
+  );
+}
+
+function StaffManagement({ staff, setStaff }: { staff: StaffMember[]; setStaff: StateDispatch<SetStateAction<StaffMember[]>> }) {
+  const [editing, setEditing] = useState<Partial<StaffMember> | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const roleLabel = (role: StaffMember["role"]) => role === "administracion" ? "Administración" : role === "encargado" ? "Jefe de Producción" : "Maestro Heladero";
+  const save = async () => {
+    if (!editing?.displayName || !editing.email) return;
+    setSaving(true); setError("");
+    try {
+      const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "save-staff", staff: { ...editing, role: editing.role ?? "produccion", active: editing.active !== false } }) });
+      const result = await response.json() as { staff?: StaffMember[]; error?: string };
+      if (!response.ok) throw new Error(result.error ?? "No se pudo guardar el personal.");
+      setStaff(result.staff ?? []); setEditing(null);
+    } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "No se pudo guardar el personal."); }
+    finally { setSaving(false); }
+  };
+  return <section className="space-y-5">
+    <div className="flex flex-col gap-4 rounded-3xl border bg-white p-6 shadow-sm sm:flex-row sm:items-end sm:justify-between"><div><Badge className="bg-[#f4d5e1] text-[#983f62]">Accesos</Badge><h2 className="mt-3 text-3xl font-black">Personal y permisos</h2><p className="mt-1 text-muted-foreground">Definí quién puede operar y qué información puede ver.</p></div><Button onClick={() => setEditing({ displayName: "", email: "", role: "produccion", active: true })} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Agregar personal</Button></div>
+    {error && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">{error}</div>}
+    <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><Table><TableHeader><TableRow><TableHead>Persona</TableHead><TableHead>Correo de acceso</TableHead><TableHead>Rol</TableHead><TableHead>Puede ver</TableHead><TableHead>Estado</TableHead><TableHead /></TableRow></TableHeader><TableBody>{staff.map((member) => <TableRow key={member.id}><TableCell className="font-bold">{member.displayName}</TableCell><TableCell>{member.email}</TableCell><TableCell><Badge variant="outline">{roleLabel(member.role)}</Badge></TableCell><TableCell className="text-sm text-muted-foreground">{member.role === "administracion" ? "Todo, incluidos costos y cuentas corrientes" : member.role === "encargado" ? "Producción, stock, despachos y remitos" : "Producción y stock"}</TableCell><TableCell><Badge className={member.active ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-600"}>{member.active ? "Activo" : "Inactivo"}</Badge></TableCell><TableCell className="text-right"><Button variant="ghost" onClick={() => setEditing(member)}>Editar</Button></TableCell></TableRow>)}</TableBody></Table></div>
+    <Dialog open={Boolean(editing)} onOpenChange={(open) => !open && setEditing(null)}><DialogContent><DialogHeader><DialogTitle>{editing?.id ? "Editar integrante" : "Agregar personal"}</DialogTitle><DialogDescription>El correo debe coincidir con el que la persona usa para ingresar.</DialogDescription></DialogHeader>{editing && <div className="grid gap-4 py-2"><label className="space-y-2 text-sm font-bold">Nombre y apellido<Input value={editing.displayName ?? ""} onChange={(event) => setEditing({ ...editing, displayName: event.target.value })}/></label><label className="space-y-2 text-sm font-bold">Correo<Input type="email" value={editing.email ?? ""} onChange={(event) => setEditing({ ...editing, email: event.target.value })}/></label><label className="space-y-2 text-sm font-bold">Rol<select value={editing.role ?? "produccion"} onChange={(event) => setEditing({ ...editing, role: event.target.value as StaffMember["role"] })} className="h-10 w-full rounded-md border bg-white px-3 font-normal"><option value="produccion">Producción</option><option value="encargado">Encargado</option><option value="administracion">Administración</option></select></label><label className="flex items-center justify-between rounded-xl border p-3 text-sm font-bold">Usuario activo<Switch checked={editing.active !== false} onCheckedChange={(checked) => setEditing({ ...editing, active: checked })}/></label></div>}<div className="rounded-2xl bg-[#fff4f8] p-4 text-sm"><b>Producción:</b> no ve precios, costos ni cuentas corrientes.<br/><b>Encargado:</b> puede despachar y consultar remitos.<br/><b>Administración:</b> tiene acceso completo.</div><DialogFooter><Button variant="outline" onClick={() => setEditing(null)}>Cancelar</Button><Button disabled={saving} onClick={save} className="bg-[#3b2931] text-white">{saving ? "Guardando…" : "Guardar personal"}</Button></DialogFooter></DialogContent></Dialog>
+  </section>;
+}
+
+type CustomerDispatch = { estimatedCostLines?: number; productionCost?: number; missingCostLines?: number; id: number; remittanceNumber: string; clientId: number; clientName: string; totalKg: number; total: number; createdAt: string };
+type CustomerPayment = { id: number; clientId: number; clientName: string; paymentDate: string; amount: number; method: string; reference: string | null; notes: string | null; createdAt: string };
+type CustomerAdjustment = { id: number; clientId: number; clientName: string; movementDate: string; movementType: string; concept: string; signedAmount: number; notes: string | null; createdAt: string };
+
+function CustomerAccounts({ clients }: { clients: Client[] }) {
+  const [range, setRange] = useState(() => accountDefaultRange());
+  const [loading, setLoading] = useState(true);
+  const [accountReady, setAccountReady] = useState(false);
+  const requestSequence = useRef(0);
+  const [clientId, setClientId] = useState(clients[0]?.id ?? 0);
+  const [dispatchRows, setDispatchRows] = useState<CustomerDispatch[]>([]);
+  const [paymentRows, setPaymentRows] = useState<CustomerPayment[]>([]);
+  const [adjustmentRows, setAdjustmentRows] = useState<CustomerAdjustment[]>([]);
+  const [paymentOpen, setPaymentOpen] = useState(false);
+  const [adjustmentOpen, setAdjustmentOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [payment, setPayment] = useState({ amount: "", method: "Transferencia", reference: "", notes: "", paymentDate: new Date().toISOString().slice(0, 10) });
+  const [adjustment, setAdjustment] = useState({ movementType: "Venta", concept: "Regalía mensual", amount: "", effect: "increase", notes: "", movementDate: new Date().toISOString().slice(0, 10) });
+  const selectedClient = clients.find((client) => client.id === clientId) ?? clients[0];
+  const loadAccount = async () => {
+    const requestId = ++requestSequence.current;
+    setLoading(true); setAccountReady(false); setError("");
+    try {
+      const response = await fetch("/api/customer-account?clientId=" + clientId, { cache: "no-store" });
+      const data = await response.json() as { recentDispatches?: CustomerDispatch[]; customerPayments?: CustomerPayment[]; customerAdjustments?: CustomerAdjustment[]; error?: string };
+      if (requestId !== requestSequence.current) return;
+      if (!response.ok) throw new Error(data.error ?? "No se pudo cargar la cuenta corriente.");
+      setDispatchRows(data.recentDispatches ?? []); setPaymentRows(data.customerPayments ?? []); setAdjustmentRows(data.customerAdjustments ?? []);
+      setAccountReady(true);
+    } finally { if (requestId === requestSequence.current) setLoading(false); }
+  };
+  useEffect(() => {
+    setDispatchRows([]); setPaymentRows([]); setAdjustmentRows([]);
+    if (clientId) loadAccount().catch((loadError) => setError(loadError instanceof Error ? loadError.message : "No se pudo cargar la cuenta corriente."));
+    else { setLoading(false); setAccountReady(false); }
+    return () => { requestSequence.current++; };
+  }, [clientId]);
+  const clientDispatches = dispatchRows.filter((row) => row.clientId === clientId || row.clientName === selectedClient?.name);
+  const clientPayments = paymentRows.filter((row) => row.clientId === clientId || row.clientName === selectedClient?.name);
+  const clientAdjustments = adjustmentRows.filter((row) => row.clientId === clientId || row.clientName === selectedClient?.name);
+  const adjustmentsTotal = clientAdjustments.reduce((sum, row) => sum + Number(row.signedAmount), 0);
+  const invoiced = clientDispatches.reduce((sum, row) => sum + Number(row.total), 0) + adjustmentsTotal;
+  const collected = clientPayments.reduce((sum, row) => sum + Number(row.amount), 0);
+  const balance = invoiced - collected;
+  const movements = [
+    ...clientDispatches.map((row) => ({ key: `d-${row.id}`, date: row.createdAt, detail: `Remito ${row.remittanceNumber}`, debit: Number(row.total), credit: 0, note: `${Number(row.totalKg).toLocaleString("es-AR", { minimumFractionDigits: 3 })} kg` })),
+    ...clientPayments.map((row) => ({ key: `p-${row.id}`, date: row.paymentDate, detail: `Pago · ${row.method}`, debit: 0, credit: Number(row.amount), note: row.reference || row.notes || "Sin referencia" })),
+    ...clientAdjustments.map((row) => ({ key: `a-${row.id}`, date: row.movementDate, detail: `${row.movementType} · ${row.concept}`, debit: row.signedAmount > 0 ? Number(row.signedAmount) : 0, credit: row.signedAmount < 0 ? Math.abs(Number(row.signedAmount)) : 0, note: row.notes || (row.signedAmount > 0 ? "Aumenta el saldo" : "Disminuye el saldo") })),
+  ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  const summary = summarizeAccount(movements, range.from, range.to);
+  const inPeriod = (date: string) => Boolean(summary) && accountDay(date) >= range.from && accountDay(date) <= range.to;
+  const periodDispatches = clientDispatches.filter((row) => inPeriod(row.createdAt));
+  const periodSales = periodDispatches.reduce((sum, row) => sum + Number(row.total), 0);
+  const manualSales = clientAdjustments.filter((row) => row.movementType.toLowerCase() === "venta" && inPeriod(row.movementDate)).reduce((sum, row) => sum + Number(row.signedAmount), 0);
+  const periodCost = periodDispatches.reduce((sum, row) => sum + Number(row.productionCost ?? 0), 0);
+  const missingCosts = periodDispatches.reduce((sum, row) => sum + Number(row.missingCostLines ?? 0), 0);
+  const estimatedCosts = periodDispatches.reduce((sum, row) => sum + Number(row.estimatedCostLines ?? 0), 0);
+  const exportStatement = () => {
+    if (!summary || !accountReady || !selectedClient) return;
+    const preview = window.open("", "_blank");
+    if (!preview) { setError("Permití abrir la ventana del resumen para imprimirlo o guardarlo como PDF."); return; }
+    preview.opener = null;
+    preview.document.write(customerStatementHtml(selectedClient.name, range.from, range.to, movements));
+    preview.document.close();
+    preview.focus();
+  };
+  const savePayment = async () => {
+    if (!selectedClient || !Number(payment.amount.replace(/\D/g, ""))) return;
+    setSaving(true); setError("");
+    try {
+      const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "register-customer-payment", payment: { clientId: selectedClient.id, clientName: selectedClient.name, amount: Number(payment.amount.replace(/\D/g, "")), method: payment.method, reference: payment.reference, notes: payment.notes, paymentDate: payment.paymentDate } }) });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "No se pudo registrar el pago.");
+      await loadAccount();
+      setPaymentOpen(false);
+      setPayment({ amount: "", method: "Transferencia", reference: "", notes: "", paymentDate: new Date().toISOString().slice(0, 10) });
+    } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "No se pudo registrar el pago."); }
+    finally { setSaving(false); }
+  };
+  const saveAdjustment = async () => {
+    if (!selectedClient || !adjustment.concept || !Number(adjustment.amount.replace(/\D/g, ""))) return;
+    setSaving(true); setError("");
+    try {
+      const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "register-customer-adjustment", movement: { ...adjustment, clientId: selectedClient.id, clientName: selectedClient.name, amount: Number(adjustment.amount.replace(/\D/g, "")) } }) });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "No se pudo registrar el movimiento.");
+      await loadAccount(); setAdjustmentOpen(false);
+      setAdjustment({ movementType: "Venta", concept: "Regalía mensual", amount: "", effect: "increase", notes: "", movementDate: new Date().toISOString().slice(0, 10) });
+    } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "No se pudo registrar el movimiento."); }
+    finally { setSaving(false); }
+  };
+  return <section className="space-y-5">
+    <div className="flex flex-col gap-4 rounded-3xl border bg-white p-6 shadow-sm lg:flex-row lg:items-end lg:justify-between">
+      <div><Badge className="bg-[#f4d5e1] text-[#983f62]">Administración</Badge><h2 className="mt-3 text-3xl font-black">Cuenta corriente de clientes</h2><p className="mt-1 text-muted-foreground">Remitos enviados, cobros recibidos y saldo pendiente de cada cliente.</p></div>
+      <div className="flex flex-col gap-2 sm:flex-row"><select value={clientId} onChange={(event) => setClientId(Number(event.target.value))} className="h-11 min-w-64 rounded-xl border bg-white px-3 font-bold">{clients.filter((client) => client.active).map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select><Button variant="outline" onClick={() => setAdjustmentOpen(true)} className="h-11 rounded-xl"><Plus /> Nueva venta / ajuste</Button><Button onClick={() => setPaymentOpen(true)} className="h-11 rounded-xl bg-[#3b2931] text-white"><Plus /> Registrar cobro</Button></div>
+    </div>
+    {error && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">{error}</div>}
+    <div className="flex flex-wrap items-end gap-4 rounded-3xl border bg-white p-5 shadow-sm">
+      <label className="space-y-2 text-sm font-bold">Desde<Input type="date" value={range.from} onChange={(event) => setRange({ ...range, from: event.target.value })}/></label>
+      <label className="space-y-2 text-sm font-bold">Hasta<Input type="date" value={range.to} onChange={(event) => setRange({ ...range, to: event.target.value })}/></label>
+      <Button variant="outline" onClick={() => setRange(accountDefaultRange())}>Últimos 2 meses</Button>
+      <Button disabled={loading || !accountReady || !summary} onClick={exportStatement} className="bg-[#3b2931] text-white"><FileText /> Exportar resumen / PDF</Button>
+      <p className="w-full text-xs text-muted-foreground">El resumen para el cliente incluye saldo anterior, movimientos y saldo final. No incluye costos ni notas internas. En la vista previa, elegí Imprimir / Guardar como PDF.</p>
+    </div>
+    {!summary && <p role="alert" className="text-sm font-bold text-red-700">Ingresá ambas fechas y verificá que Desde no sea posterior a Hasta.</p>}
+    {loading && <p role="status" className="p-5 text-sm text-muted-foreground">Cargando historial completo del cliente…</p>}
+    {!loading && accountReady && summary && <>
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <Metric icon={WalletCards} label="Saldo anterior" value={accountMoney(summary.opening)} note={"Antes del " + accountDate(range.from)} />
+        <Metric icon={WalletCards} label="Cargos del período" value={accountMoney(summary.debits)} note="Remitos, ventas y ajustes que aumentan deuda" />
+        <Metric icon={WalletCards} label="Créditos del período" value={accountMoney(summary.credits)} note="Cobros y ajustes que disminuyen deuda" />
+        <Metric icon={WalletCards} label={summary.closing < 0 ? "Saldo a favor del cliente" : "Saldo deudor al cierre"} value={accountMoney(Math.abs(summary.closing))} note={"Al " + accountDate(range.to) + " · saldo actual: " + accountMoney(balance)} />
+      </div>
+      <div className="rounded-3xl border bg-[#fff9fb] p-5 shadow-sm"><h3 className="text-lg font-black">Análisis interno del período</h3><p className="mt-1 text-xs text-muted-foreground">Esta información no se incluye en el resumen para el cliente.</p><div className="mt-4 grid gap-4 sm:grid-cols-3">
+        <div><p className="text-sm font-bold">Compras del cliente</p><p className="mt-2 text-2xl font-black">{accountMoney(periodSales + manualSales)}</p><p className="text-xs text-muted-foreground">Remitos: {accountMoney(periodSales)} · ventas manuales: {accountMoney(manualSales)}</p></div>
+        <div><p className="text-sm font-bold">Costo de producción {missingCosts ? "conocido (parcial)" : estimatedCosts ? "estimado" : "de los remitos"}</p><p className="mt-2 text-2xl font-black">{accountMoney(periodCost)}</p><p className="text-xs text-muted-foreground">Costo histórico disponible o fórmula actual × kg despachados</p></div>
+        <div><p className="text-sm font-bold">Margen bruto {estimatedCosts ? "estimado" : "de los remitos"}</p><p className="mt-2 text-2xl font-black">{missingCosts ? "Costo incompleto" : accountMoney(periodSales - periodCost)}</p><p className="text-xs text-muted-foreground">Sin gastos operativos ni ventas manuales</p></div>
+      </div>{estimatedCosts > 0 && <p className="mt-4 text-sm text-amber-800">{estimatedCosts} líneas estimadas con la fórmula y costos actuales porque no tienen costo histórico. Esta estimación cambia si se actualiza la fórmula o el precio de los insumos.</p>}{missingCosts > 0 && <p className="mt-4 text-sm font-bold text-amber-800">{missingCosts} líneas sin costo histórico por kg. El costo mostrado es parcial; no se calcula margen hasta tener el costo completo.</p>}{manualSales !== 0 && <p className="mt-3 text-xs text-muted-foreground">Las ventas manuales no tienen costo de fórmula asociado.</p>}</div>
+      <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="border-b p-5"><h3 className="text-xl font-black">Movimientos de {selectedClient?.name}</h3><p className="text-sm text-muted-foreground">Del {accountDate(range.from)} al {accountDate(range.to)}. Saldo acumulado en orden cronológico.</p></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Fecha</TableHead><TableHead>Movimiento</TableHead><TableHead>Detalle interno</TableHead><TableHead className="text-right">Debe</TableHead><TableHead className="text-right">Haber</TableHead><TableHead className="text-right">Saldo</TableHead></TableRow></TableHeader><TableBody>
+        <TableRow className="bg-[#fff4f8]"><TableCell colSpan={5} className="font-bold">Saldo anterior al {accountDate(range.from)}</TableCell><TableCell className="text-right font-bold">{accountMoney(summary.opening)}</TableCell></TableRow>
+        {summary.rows.length === 0 && <TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">No hay movimientos en este período.</TableCell></TableRow>}
+        {summary.rows.map((row) => <TableRow key={row.key}><TableCell className="whitespace-nowrap">{accountDate(row.date)}</TableCell><TableCell className="font-bold">{row.detail}</TableCell><TableCell className="text-muted-foreground">{row.note}</TableCell><TableCell className="text-right text-rose-700">{row.debit ? accountMoney(row.debit) : "—"}</TableCell><TableCell className="text-right text-emerald-700">{row.credit ? accountMoney(row.credit) : "—"}</TableCell><TableCell className="text-right font-bold">{accountMoney(row.balance)}</TableCell></TableRow>)}
+        <TableRow className="bg-[#fff4f8]"><TableCell colSpan={3} className="font-bold">Saldo al cierre</TableCell><TableCell className="text-right font-bold">{accountMoney(summary.debits)}</TableCell><TableCell className="text-right font-bold">{accountMoney(summary.credits)}</TableCell><TableCell className="text-right font-bold">{accountMoney(summary.closing)}</TableCell></TableRow>
+      </TableBody></Table></div></div>
+    </>}
+    <Dialog open={paymentOpen} onOpenChange={setPaymentOpen}><DialogContent className="sm:max-w-[620px]"><DialogHeader><DialogTitle>Registrar cobro de cliente</DialogTitle><DialogDescription>El importe se descontará automáticamente del saldo de {selectedClient?.name}.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold">Fecha<Input type="date" value={payment.paymentDate} onChange={(event) => setPayment({ ...payment, paymentDate: event.target.value })}/></label><label className="space-y-2 text-sm font-bold">Monto recibido<Input value={payment.amount} onChange={(event) => setPayment({ ...payment, amount: event.target.value })} inputMode="numeric" placeholder="$ 0"/></label><label className="space-y-2 text-sm font-bold">Forma de pago<select value={payment.method} onChange={(event) => setPayment({ ...payment, method: event.target.value })} className="h-9 w-full rounded-md border bg-transparent px-3 font-normal">{["Transferencia", "Efectivo", "Echeq", "Cheque de tercero", "Mercadería"].map((method) => <option key={method}>{method}</option>)}</select></label><label className="space-y-2 text-sm font-bold">Referencia<Input value={payment.reference} onChange={(event) => setPayment({ ...payment, reference: event.target.value })} placeholder="Transferencia, recibo o cheque"/></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Observaciones<Textarea value={payment.notes} onChange={(event) => setPayment({ ...payment, notes: event.target.value })} placeholder="Pago total, parcial u observaciones"/></label></div><div className="rounded-2xl bg-[#f7f3f5] p-4 text-sm"><div className="flex justify-between"><span>Saldo actual</span><b>{money(balance)}</b></div><div className="mt-2 flex justify-between border-t pt-2"><span>Saldo luego del cobro</span><b>{money(balance - (Number(payment.amount.replace(/\D/g, "")) || 0))}</b></div></div><DialogFooter><Button variant="outline" onClick={() => setPaymentOpen(false)}>Cancelar</Button><Button disabled={saving} onClick={savePayment} className="bg-[#3b2931] text-white">{saving ? "Guardando…" : "Registrar cobro"}</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={adjustmentOpen} onOpenChange={setAdjustmentOpen}><DialogContent className="sm:max-w-[620px]"><DialogHeader><DialogTitle>Nueva venta o ajuste</DialogTitle><DialogDescription>Registrá regalías, ventas adicionales, bonificaciones o correcciones de saldo.</DialogDescription></DialogHeader><div className="grid gap-4 py-2 sm:grid-cols-2"><label className="space-y-2 text-sm font-bold">Fecha<Input type="date" value={adjustment.movementDate} onChange={(event) => setAdjustment({ ...adjustment, movementDate: event.target.value })}/></label><label className="space-y-2 text-sm font-bold">Tipo<select value={adjustment.movementType} onChange={(event) => setAdjustment({ ...adjustment, movementType: event.target.value })} className="h-9 w-full rounded-md border bg-white px-3 font-normal"><option>Venta</option><option>Ajuste</option></select></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Concepto<Input value={adjustment.concept} onChange={(event) => setAdjustment({ ...adjustment, concept: event.target.value })} placeholder="Ej. Regalía septiembre 2026"/></label><label className="space-y-2 text-sm font-bold">Importe<Input value={adjustment.amount} onChange={(event) => setAdjustment({ ...adjustment, amount: event.target.value })} inputMode="numeric" placeholder="$ 0"/></label><label className="space-y-2 text-sm font-bold">Efecto en la cuenta<select value={adjustment.effect} onChange={(event) => setAdjustment({ ...adjustment, effect: event.target.value })} className="h-9 w-full rounded-md border bg-white px-3 font-normal"><option value="increase">Positivo · aumenta la deuda</option><option value="decrease">Negativo · disminuye la deuda</option></select></label><label className="space-y-2 text-sm font-bold sm:col-span-2">Observaciones<Textarea value={adjustment.notes} onChange={(event) => setAdjustment({ ...adjustment, notes: event.target.value })} placeholder="Detalle o período de la regalía"/></label></div><div className="rounded-2xl bg-[#f7f3f5] p-4 text-sm"><div className="flex justify-between"><span>Saldo actual</span><b>{money(balance)}</b></div><div className="mt-2 flex justify-between border-t pt-2"><span>Saldo después del movimiento</span><b>{money(balance + (adjustment.effect === "decrease" ? -1 : 1) * (Number(adjustment.amount.replace(/\D/g, "")) || 0))}</b></div></div><DialogFooter><Button variant="outline" onClick={() => setAdjustmentOpen(false)}>Cancelar</Button><Button disabled={saving} onClick={saveAdjustment} className="bg-[#3b2931] text-white">{saving ? "Guardando…" : "Registrar movimiento"}</Button></DialogFooter></DialogContent></Dialog>
+  </section>;
+}
+
+type FinancialExpense = { id: number; expenseDate: string; area: string; category: string; concept: string; amount: number; notes: string | null; employee?: string; payrollPeriod?: string; paymentStatus?: string };
+type ExpenseAnalysisRow = { id: string; date: string; center: string; category: string; kind: "material" | "service" | "expense"; concept: string; supplier: string; invoice: string; amount: number };
+type LocalSale = { id: number; saleDate: string; area: string; concept: string; amount: number; notes: string | null };
+type FinancialPurchase = { id: number; invoiceDate: string; costCenter: string; grossTotal: number; allocations?: PurchaseAllocation[] };
+type FinancialDispatch = { id: number; createdAt: string; total: number };
+
+function ProfitAndLoss() {
+  const today = new Date().toISOString().slice(0, 10);
+  const [year, setYear] = useState(Number(today.slice(0, 4))), [area, setArea] = useState("Fábrica");
+  const [expenses, setExpenses] = useState<FinancialExpense[]>([]), [sales, setSales] = useState<LocalSale[]>([]), [purchaseRows, setPurchaseRows] = useState<FinancialPurchase[]>([]), [dispatchRows, setDispatchRows] = useState<FinancialDispatch[]>([]), [adjustments, setAdjustments] = useState<CustomerAdjustment[]>([]);
+  const [saleOpen, setSaleOpen] = useState(false), [saving, setSaving] = useState(false), [error, setError] = useState("");
+  const [sale, setSale] = useState({ saleDate: today, area: "Av. de Mayo", concept: "Venta diaria", amount: "", notes: "" });
+  const load = async () => { const response = await fetch("/api/operations"); const data = await response.json(); if (!response.ok) throw new Error(data.error ?? "No se pudo cargar el estado de resultados."); setExpenses(data.operatingExpenses ?? []); setSales(data.localSales ?? []); setPurchaseRows(data.purchases ?? []); setDispatchRows(data.financialDispatches ?? []); setAdjustments(data.customerAdjustments ?? []); };
+  useEffect(() => { load().catch((loadError) => setError(loadError instanceof Error ? loadError.message : "No se pudo cargar.")); }, []);
+  const months = Array.from({ length: 12 }, (_, month) => ({
+    key: `${year}-${String(month + 1).padStart(2, "0")}`,
+    label: new Date(year, month, 1).toLocaleDateString("es-AR", { month: "short" }).replace(".", "").toUpperCase(),
+  }));
+  const categories = ["Packaging", "Servicios", "Alquileres", "Sueldos", "Mantenimiento", "Administración", "Logística", "Impuestos", "Otros"];
+  const monthly = months.map((month) => {
+    const matches = (date: string) => date.slice(0, 7) === month.key;
+    const revenue = area === "Fábrica"
+      ? dispatchRows.filter((row) => matches(row.createdAt)).reduce((sum, row) => sum + Number(row.total), 0)
+        + adjustments.filter((row) => (row.signedAmount > 0 || row.concept.startsWith("NC-D-")) && matches(row.movementDate)).reduce((sum, row) => sum + Number(row.signedAmount), 0)
+      : sales.filter((row) => row.area === area && matches(row.saleDate)).reduce((sum, row) => sum + Number(row.amount), 0);
+    const purchaseAllocations = purchaseRows.filter((row) => matches(row.invoiceDate)).flatMap((row) => row.allocations?.length ? row.allocations : [{ kind: "material" as const, category: "Materia prima", center: row.costCenter, description: "Compra de mercadería", gross: Number(row.grossTotal) }]);
+    const merchandise = purchaseAllocations.filter((item) => item.center === area && item.kind === "material").reduce((sum, item) => sum + Number(item.gross), 0);
+    const monthExpenses = expenses.filter((row) => row.area === area && matches(row.expenseDate));
+    const invoiceExpenses = purchaseAllocations.filter((item) => item.center === area && item.kind !== "material");
+    const byCategory = Object.fromEntries(categories.map((category) => [category, monthExpenses.filter((row) => row.category === category).reduce((sum, row) => sum + Number(row.amount), 0) + invoiceExpenses.filter((item) => item.category === category).reduce((sum, item) => sum + Number(item.gross), 0)]));
+    const operating = Object.values(byCategory).reduce((sum, value) => sum + Number(value), 0);
+    const investments = monthExpenses.filter((row) => row.category === "Inversiones").reduce((sum, row) => sum + Number(row.amount), 0) + invoiceExpenses.filter((item) => item.category === "Inversiones").reduce((sum, item) => sum + Number(item.gross), 0);
+    return { ...month, revenue, merchandise, byCategory, operating, investments, result: revenue - merchandise - operating };
+  });
+  const yearRevenue = monthly.reduce((sum, row) => sum + row.revenue, 0);
+  const yearCosts = monthly.reduce((sum, row) => sum + row.merchandise + row.operating, 0);
+  const yearResult = yearRevenue - yearCosts;
+  const latestWithData = [...monthly].reverse().find((row) => row.revenue || row.merchandise || row.operating) ?? monthly[new Date().getMonth()];
+  const latestIndex = monthly.findIndex((row) => row.key === latestWithData.key);
+  const previous = latestIndex > 0 ? monthly[latestIndex - 1] : undefined;
+  const change = (current: number, prior?: number) => prior ? (current / prior - 1) * 100 : null;
+  const currentChange = change(latestWithData.revenue, previous?.revenue);
+  const areaExpenses = expenses.filter((row) => row.area === area && row.expenseDate.slice(0, 4) === String(year));
+  const saveSale = async () => { const amount = Number(sale.amount.replace(/\D/g, "")); if (!amount) return; setSaving(true); setError(""); try { const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "register-local-sale", sale: { ...sale, amount } }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error ?? "No se pudo guardar."); await load(); setSaleOpen(false); } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "No se pudo guardar."); } finally { setSaving(false); } };
+  const rows: Array<{ label: string; values: Array<number | null>; tone?: string; bold?: boolean; percent?: boolean; muted?: boolean; indent?: boolean }> = [
+    { label: "VENTAS TOTALES", values: monthly.map((row) => row.revenue), tone: "bg-[#3b2931] text-white", bold: true },
+    { label: "% VAR. MES ANTERIOR", values: monthly.map((row, index) => index ? change(row.revenue, monthly[index - 1].revenue) : null), percent: true, tone: "bg-[#f7f0f3] text-[#983f62]" },
+    { label: "COSTO DE MERCADERÍA", values: monthly.map((row) => row.merchandise), bold: true },
+    { label: "% SOBRE VENTAS", values: monthly.map((row) => row.revenue ? row.merchandise / row.revenue * 100 : null), percent: true, muted: true },
+    ...categories.flatMap((category) => [
+      { label: category.toUpperCase(), values: monthly.map((row) => Number(row.byCategory[category])), indent: true },
+      { label: `% ${category.toUpperCase()} / VENTAS`, values: monthly.map((row) => row.revenue ? Number(row.byCategory[category]) / row.revenue * 100 : null), percent: true, muted: true, indent: true },
+    ]),
+    { label: "GASTOS OPERATIVOS", values: monthly.map((row) => row.operating), tone: "bg-[#f7f0f3]", bold: true },
+    { label: "% GASTOS / VENTAS", values: monthly.map((row) => row.revenue ? row.operating / row.revenue * 100 : null), percent: true, tone: "bg-[#f7f0f3]", bold: true },
+    { label: "RESULTADO OPERATIVO", values: monthly.map((row) => row.result), tone: "bg-[#3b2931] text-white", bold: true },
+    { label: "MARGEN", values: monthly.map((row) => row.revenue ? row.result / row.revenue * 100 : null), percent: true, tone: "bg-[#3b2931] text-white", bold: true },
+    { label: "INVERSIONES", values: monthly.map((row) => row.investments), tone: "bg-amber-50", bold: true },
+  ];
+  return <section className="space-y-5"><div className="flex flex-col gap-4 rounded-3xl border bg-white p-6 shadow-sm xl:flex-row xl:items-end xl:justify-between"><div><Badge className="bg-[#f4d5e1] text-[#983f62]">Administración</Badge><h2 className="mt-3 text-3xl font-black">Estado de resultados</h2><p className="mt-1 text-muted-foreground">Comparativo mensual inspirado en tu RTO económico. Los gastos se cargan desde Costos.</p></div><div className="flex flex-wrap gap-2"><select value={area} onChange={(event) => setArea(event.target.value)} className="h-10 rounded-md border bg-white px-3 font-bold">{["Fábrica", "Av. de Mayo"].map((item) => <option key={item}>{item}</option>)}</select><select value={year} onChange={(event) => setYear(Number(event.target.value))} className="h-10 rounded-md border bg-white px-3 font-bold">{[year - 2, year - 1, year, year + 1].map((item) => <option key={item}>{item}</option>)}</select>{area !== "Fábrica" && <Button onClick={() => { setSale({ ...sale, area }); setSaleOpen(true); }} className="bg-[#3b2931] text-white"><Plus/> Cargar venta</Button>}</div></div>{error && <div className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{error}</div>}
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{[["Ventas del año", yearRevenue, `${area} · ${year}`],["Costos del año", yearCosts, "Mercadería + gastos operativos"],[`Ventas ${latestWithData.label}`, latestWithData.revenue, currentChange === null ? "Sin mes anterior comparable" : `${currentChange >= 0 ? "+" : ""}${currentChange.toFixed(1)}% vs. ${previous?.label}`],["Resultado del año", yearResult, yearRevenue ? `Margen ${(yearResult / yearRevenue * 100).toFixed(1)}%` : "Sin ventas cargadas"]].map(([label,value,note], index) => <div key={String(label)} className={`rounded-3xl p-5 shadow-sm ${index === 3 ? (Number(value) >= 0 ? "bg-emerald-700 text-white" : "bg-rose-700 text-white") : "border bg-white"}`}><p className={`text-sm font-bold ${index === 3 ? "text-white/70" : "text-muted-foreground"}`}>{label}</p><p className="mt-2 text-3xl font-black">{money(Number(value))}</p><p className={`mt-2 text-xs ${index === 3 ? "text-white/70" : "text-muted-foreground"}`}>{note}</p></div>)}</div>
+    <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="flex flex-col gap-2 border-b p-5 sm:flex-row sm:items-end sm:justify-between"><div><h3 className="text-xl font-black">RTO económico · {area}</h3><p className="text-sm text-muted-foreground">Mes contra mes · importes en pesos · desplazá la tabla para ver todo el año.</p></div><Badge variant="outline">Enero — Diciembre {year}</Badge></div><div className="overflow-x-auto"><table className="w-full min-w-[1450px] border-collapse text-sm"><thead><tr className="bg-[#eadde3]"><th className="sticky left-0 z-20 min-w-64 border-b border-r bg-[#eadde3] px-4 py-3 text-left font-black">CONCEPTO</th>{months.map((month) => <th key={month.key} className="min-w-24 border-b px-3 py-3 text-right font-black">{month.label}</th>)}</tr></thead><tbody>{rows.map((row) => <tr key={row.label} className={row.tone ?? "hover:bg-slate-50"}><td className={`sticky left-0 z-10 border-b border-r px-4 py-2.5 ${row.tone ?? "bg-white"} ${row.bold ? "font-black" : "font-medium"} ${row.indent ? "pl-8" : ""}`}>{row.label}</td>{row.values.map((value, index) => <td key={months[index].key} className={`border-b px-3 py-2.5 text-right tabular-nums ${row.bold ? "font-black" : ""} ${row.muted ? "text-xs text-muted-foreground" : ""}`}>{value === null || Number.isNaN(value) ? "—" : row.percent ? `${Number(value).toFixed(1)}%` : money(Number(value))}</td>)}</tr>)}</tbody></table></div></div>
+    <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="border-b p-5"><h3 className="text-xl font-black">Detalle de gastos · {year}</h3><p className="text-sm text-muted-foreground">Comprobantes que alimentan automáticamente el comparativo.</p></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Fecha</TableHead><TableHead>Categoría</TableHead><TableHead>Concepto</TableHead><TableHead className="text-right">Importe</TableHead></TableRow></TableHeader><TableBody>{areaExpenses.length === 0 && <TableRow><TableCell colSpan={4} className="py-8 text-center text-muted-foreground">No hay gastos cargados para este año.</TableCell></TableRow>}{areaExpenses.map((row) => <TableRow key={row.id}><TableCell>{new Date(row.expenseDate).toLocaleDateString("es-AR")}</TableCell><TableCell><Badge variant="outline">{row.category}</Badge></TableCell><TableCell className="font-bold">{row.concept}</TableCell><TableCell className="text-right">{money(row.amount)}</TableCell></TableRow>)}</TableBody></Table></div></div>
+    <Dialog open={saleOpen} onOpenChange={setSaleOpen}><DialogContent><DialogHeader><DialogTitle>Cargar venta del local</DialogTitle><DialogDescription>Ingresá la facturación para incorporarla al resultado del local.</DialogDescription></DialogHeader><div className="grid gap-4"><label className="space-y-2 text-sm font-bold">Fecha<Input type="date" value={sale.saleDate} onChange={(e)=>setSale({...sale,saleDate:e.target.value})}/></label><label className="space-y-2 text-sm font-bold">Concepto<Input value={sale.concept} onChange={(e)=>setSale({...sale,concept:e.target.value})}/></label><label className="space-y-2 text-sm font-bold">Importe<Input value={sale.amount} onChange={(e)=>setSale({...sale,amount:e.target.value})} inputMode="numeric"/></label><label className="space-y-2 text-sm font-bold">Observaciones<Textarea value={sale.notes} onChange={(e)=>setSale({...sale,notes:e.target.value})}/></label></div><DialogFooter><Button variant="outline" onClick={()=>setSaleOpen(false)}>Cancelar</Button><Button disabled={saving} onClick={saveSale} className="bg-[#3b2931] text-white">Guardar venta</Button></DialogFooter></DialogContent></Dialog>
+  </section>;
+}
+
+type CostTab = "resumen" | "compras" | "vencimientos" | "alertas" | "gastos" | "iva" | "pagos" | "proveedores" | "materias" | "formulas";
+type InvoicePriceMode = "included" | "excluded" | "black";
+type InvoiceLineKind = "material" | "service" | "expense";
+type PurchaseAllocation = { kind: InvoiceLineKind; category: string; center: string; description: string; gross: number };
+type InvoiceLineDraft = { product: string; quantity: string; price: string; priceMode: InvoicePriceMode; kind: InvoiceLineKind; category: string; center: string; vatRate: string };
+
+const parseInvoiceAmount = (value: string) => {
+  const cleaned = String(value ?? "").replace(/[^0-9,.-]/g, "");
+  if (!cleaned) return 0;
+  if (cleaned.includes(",")) return Number(cleaned.replaceAll(".", "").replace(",", ".")) || 0;
+  const dots = cleaned.match(/\./g)?.length ?? 0;
+  if (dots === 1 && /\.\d{1,2}$/.test(cleaned)) return Number(cleaned) || 0;
+  return Number(cleaned.replaceAll(".", "")) || 0;
+};
+const defaultInvoicePriceMode = (supplierTaxMode: string): InvoicePriceMode => supplierTaxMode === "Con IVA" ? "excluded" : "black";
+const invoiceCostCenters = ["Fábrica", "Av. de Mayo"];
+const createInvoiceLine = (priceMode: InvoicePriceMode, kind: InvoiceLineKind = "material"): InvoiceLineDraft => ({ product: "", quantity: "1", price: "", priceMode, kind, category: kind === "material" ? "Materia prima" : kind === "service" ? "Servicios" : "Otros", center: "", vatRate: "21" });
+const calculateInvoiceLine = (line: InvoiceLineDraft, vatRate: number) => {
+  const quantity = Number(line.quantity.replace(",", ".")) || 0;
+  const enteredUnitPrice = parseInvoiceAmount(line.price);
+  const effectiveRate = line.priceMode === "black" ? 0 : Math.max(0, vatRate || 0);
+  const unitNet = line.priceMode === "included" && effectiveRate > 0 ? enteredUnitPrice / (1 + effectiveRate / 100) : enteredUnitPrice;
+  const unitGross = line.priceMode === "excluded" ? enteredUnitPrice * (1 + effectiveRate / 100) : enteredUnitPrice;
+  const net = quantity * unitNet;
+  const gross = quantity * unitGross;
+  return { net, vat: gross - net, gross, vatRate: effectiveRate };
+};
+
+const costCenters = [
+  { name: "Fábrica", amount: 18432540, tone: "bg-[#3b2931]" },
+  { name: "Av. de Mayo", amount: 8294780, tone: "bg-[#c45c82]" },
+];
+
+const initialPurchaseRows = [
+  { date: "13/10/2026", invoice: "FC A 0004-1842", supplier: "Vacalin", detail: "3 productos", center: "Fábrica", net: 1240000, vat21: 260400, vat105: 0, tax: 260400, total: 1500400, status: "Cuenta corriente" },
+  { date: "12/10/2026", invoice: "FC B 0002-9811", supplier: "Cooperativa Eléctrica", detail: "Energía septiembre", center: "Fábrica", net: 1064000, vat21: 223440, vat105: 0, tax: 223440, total: 1287440, status: "Pagado" },
+  { date: "11/10/2026", invoice: "T 084521", supplier: "YPF", detail: "Combustible reparto", center: "Fábrica", net: 118000, vat21: 24780, vat105: 0, tax: 24780, total: 142780, status: "Pagado" },
+  { date: "10/10/2026", invoice: "FC A 0001-4430", supplier: "Distribuidora Centro", detail: "2 productos", center: "Fábrica", net: 160181, vat21: 0, vat105: 16819, tax: 16819, total: 177000, status: "Cuenta corriente" },
+];
+
+const supplierProfiles = [
+  { name: "Vacalin", taxMode: "Con IVA", debt: 3258040, invoices: "2 facturas", date: "13/10/26" },
+  { name: "Distribuidora Centro", taxMode: "Con IVA", debt: 847500, invoices: "3 facturas", date: "10/10/26" },
+  { name: "Mapsa", taxMode: "Con IVA", debt: 0, invoices: "Al día", date: "03/10/26" },
+  { name: "Proveedor informal", taxMode: "Sin IVA", debt: 0, invoices: "Pago contado", date: "01/10/26" },
+];
+
+const initialPaymentRows = [
+  { date: "13/10/2026", supplier: "Vacalin", amount: 1000000, method: "Transferencia", reference: "TR 184205", note: "Pago a cuenta" },
+  { date: "10/10/2026", supplier: "Distribuidora Centro", amount: 450000, method: "Efectivo", reference: "REC 0048", note: "Pago parcial" },
+  { date: "06/10/2026", supplier: "Vacalin", amount: 750000, method: "Echeq", reference: "ECHK 9321", note: "Vto. 20/10/26" },
+];
+
+const vacalinLedger = [
+  { date: "01/10/26", detail: "Saldo anterior", debit: 0, credit: 0, balance: 2507640 },
+  { date: "06/10/26", detail: "Pago · Echeq ECHK 9321", debit: 0, credit: 750000, balance: 1757640 },
+  { date: "09/10/26", detail: "FC A 0004-1819", debit: 2000000, credit: 0, balance: 3757640 },
+  { date: "13/10/26", detail: "Pago · Transferencia TR 184205", debit: 0, credit: 1000000, balance: 2757640 },
+  { date: "13/10/26", detail: "FC A 0004-1842", debit: 500400, credit: 0, balance: 3258040 },
+];
+
+type RawMaterial = {
+  id?: number;
+  name: string;
+  unit: string;
+  pack: string;
+  vat: number;
+  cost: number;
+  previous: number;
+  supplier?: string;
+  supplierDescription?: string;
+  contentPerPackage?: number;
+  date: string;
+  kind?: InvoiceLineKind;
+  category?: string;
+};
+
+type PurchaseLineRecord = { id: number; product: string; quantity: number; unitNet: number; vatRate: number; vatAmount: number; total: number; finalCostPerUnit: number; kind: InvoiceLineKind; category: string; center: string; priceMode: InvoicePriceMode };
+type CostPurchaseRow = {
+  documentType?: "invoice" | "credit_note";
+  id: number;
+  supplierId: number;
+  supplier: string;
+  invoice: string;
+  invoiceDate: string;
+  dueDate?: string | null;
+  dueDateDisplay?: string;
+  date: string;
+  detail: string;
+  center: string;
+  net: number;
+  vat21: number;
+  vat105: number;
+  tax: number;
+  total: number;
+  status: string;
+  paymentStatus: string;
+  grossTotal: number;
+  costCenter: string;
+  allocations?: PurchaseAllocation[];
+  lines?: PurchaseLineRecord[];
+};
+
+type SupplierCostProfile = {
+  id: number;
+  name: string;
+  taxMode: string;
+  category: string;
+  debt: number;
+  invoices: string;
+  date: string;
+};
+
+type SupplierPaymentRow = {
+  id: number;
+  supplierId: number;
+  supplier: string;
+  paymentDate: string;
+  date: string;
+  amount: number;
+  method: string;
+  reference: string;
+  note: string;
+};
+
+type FormulaItemRecord = {
+  id?: number;
+  materialId: number | null;
+  recipeId?: number;
+  materialName: string;
+  quantityKg: number;
+  unitCost: number;
+  lineCost: number;
+};
+
+type FormulaRecord = {
+  id: number;
+  productCode: string;
+  productName: string;
+  name: string;
+  yieldKg: number;
+  batch: string;
+  ingredients: number;
+  recipe: number;
+  perKg: number;
+  inputQuantityKg: number;
+  wasteKg: number;
+  yieldPercent: number;
+  hasWaste: boolean;
+  packageWeightKg?: number;
+  presentationCost?: number | null;
+  updated: string;
+  items: FormulaItemRecord[];
+};
+
+type FormulaDraft = {
+  id: number | null;
+  productCode: string;
+  name: string;
+  yieldKg: string;
+  hasWaste: boolean;
+  items: Array<{ materialId: string; recipeId?: string; ingredientType?: "material" | "recipe"; quantityKg: string }>;
+};
+
+const initialRawMaterials: RawMaterial[] = [
+  { name: "Leche entera", unit: "litro", pack: "Caja x 12 l", vat: 10.5, cost: 1475, previous: 1390, supplier: "Distribuidora Centro", date: "10/10/26" },
+  { name: "Crema heladera 39%", unit: "litro", pack: "Bidón x 10 l", vat: 21, cost: 5000, previous: 4780, supplier: "Vacalin", date: "13/10/26" },
+  { name: "Azúcar", unit: "kg", pack: "Bolsa x 25 kg", vat: 21, cost: 1048, previous: 1010, supplier: "Cañuelas", date: "07/10/26" },
+  { name: "Dulce de leche repostero", unit: "kg", pack: "Balde x 10 kg", vat: 21, cost: 5280, previous: 5150, supplier: "Vacalin", date: "06/10/26" },
+  { name: "Chocolate cobertura", unit: "kg", pack: "Caja x 5 kg", vat: 21, cost: 13940, previous: 12900, supplier: "Mapsa", date: "03/10/26" },
+];
+
+const flavorCosts = [
+  { name: "Chocolate Münna", batch: "60 kg", ingredients: 9, recipe: 348420, perKg: 5807, updated: "13/10/26" },
+  { name: "Dulce de leche Münna", batch: "60 kg", ingredients: 8, recipe: 314160, perKg: 5236, updated: "13/10/26" },
+  { name: "Pistacho", batch: "60 kg", ingredients: 10, recipe: 512880, perKg: 8548, updated: "13/10/26" },
+  { name: "Frutilla a la crema", batch: "60 kg", ingredients: 8, recipe: 287640, perKg: 4794, updated: "13/10/26" },
+];
+
+const money = (value: number) => new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 }).format(value);
+const invoiceMoney = (value: number) => new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+
+type SupplierAdjustment = { id: string; supplierId: number; movementDate: string; concept: string; amount: number };
+
+function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [tab, setTab] = useState<CostTab>("resumen");
+  const [purchaseOpen, setPurchaseOpen] = useState(initialPurchaseOpen);
+  const [isCreditNote, setIsCreditNote] = useState(false);
+  const [savingPurchase, setSavingPurchase] = useState(false);
+  const [purchaseError, setPurchaseError] = useState("");
+  const [purchaseQuery, setPurchaseQuery] = useState("");
+  const [selectedPurchase, setSelectedPurchase] = useState<CostPurchaseRow | null>(null);
+  const [purchaseDetailOpen, setPurchaseDetailOpen] = useState(false);
+  const [editingPurchaseId, setEditingPurchaseId] = useState<number | null>(null);
+  const [deletingPurchase, setDeletingPurchase] = useState(false);
+  const [payingPurchaseId, setPayingPurchaseId] = useState<number | null>(null);
+  const [purchaseActionError, setPurchaseActionError] = useState("");
+  const [paymentOpen, setPaymentOpen] = useState(false);
+  const [savingPayment, setSavingPayment] = useState(false);
+  const [paymentError, setPaymentError] = useState("");
+  const [expenseOpen, setExpenseOpen] = useState(false);
+  const [savingExpense, setSavingExpense] = useState(false);
+  const [expenseError, setExpenseError] = useState("");
+  const [expenseRows, setExpenseRows] = useState<FinancialExpense[]>([]);
+  const [expenseDateFrom, setExpenseDateFrom] = useState(`${today.slice(0, 7)}-01`);
+  const [expenseDateTo, setExpenseDateTo] = useState(today);
+  const [expenseCenterFilter, setExpenseCenterFilter] = useState("Todos");
+  const [expenseCategoryFilter, setExpenseCategoryFilter] = useState("Todas");
+  const [expenseSupplierFilter, setExpenseSupplierFilter] = useState("Todos");
+  const [materials, setMaterials] = useState<RawMaterial[]>([]);
+  const [materialQuery, setMaterialQuery] = useState("");
+  const [materialOpen, setMaterialOpen] = useState(false);
+  const [savingMaterial, setSavingMaterial] = useState(false);
+  const [materialError, setMaterialError] = useState("");
+  const [materialMessage, setMaterialMessage] = useState("");
+  const [editingMaterialName, setEditingMaterialName] = useState<string | null>(null);
+  const [archivingMaterial, setArchivingMaterial] = useState("");
+  const [material, setMaterial] = useState({ name: "", kind: "material" as InvoiceLineKind, category: "Materia prima", unit: "kg", contentPerPackage: "1", vat: "21" });
+  const [purchases, setPurchases] = useState<CostPurchaseRow[]>([]);
+  const [payments, setPayments] = useState<SupplierPaymentRow[]>([]);
+  const [suppliers, setSuppliers] = useState<SupplierCostProfile[]>([]);
+  const [supplierOpen, setSupplierOpen] = useState(false);
+  const [savingSupplier, setSavingSupplier] = useState(false);
+  const [supplierError, setSupplierError] = useState("");
+  const [supplierMessage, setSupplierMessage] = useState("");
+  const [editingSupplierId, setEditingSupplierId] = useState<number | null>(null);
+  const [archivingSupplierId, setArchivingSupplierId] = useState<number | null>(null);
+  const [supplierAdjustments, setSupplierAdjustments] = useState<SupplierAdjustment[]>([]);
+  const [adjustment, setAdjustment] = useState({ id: "", movementDate: "", direction: "", concept: "", amount: "" });
+  const [adjustmentOpen, setAdjustmentOpen] = useState(false);
+  const [savingAdjustment, setSavingAdjustment] = useState(false);
+  const [adjustmentError, setAdjustmentError] = useState("");
+  const [supplierProfileOpen, setSupplierProfileOpen] = useState(false);
+  const [supplier, setSupplier] = useState({ name: "", taxMode: "con_iva", category: "Materia prima" });
+  const [selectedSupplierName, setSelectedSupplierName] = useState("");
+  const [formulas, setFormulas] = useState<FormulaRecord[]>([]);
+  const [formulaQuery, setFormulaQuery] = useState("");
+  const [formulaReferencesAvailable, setFormulaReferencesAvailable] = useState(false);
+  const [productProfiles, setProductProfiles] = useState<ProductProfile[]>([]);
+  const [formulaOpen, setFormulaOpen] = useState(false);
+  const [savingFormula, setSavingFormula] = useState(false);
+  const [formulaError, setFormulaError] = useState("");
+  const [formula, setFormula] = useState<FormulaDraft>({ id: null, productCode: "", name: "", yieldKg: "1", hasWaste: false, items: [{ materialId: "", quantityKg: "" }] });
+  const newPurchaseDraft = () => ({ supplier: "", invoice: "", invoiceDate: today, dueDate: "", payment: "" });
+  const [purchase, setPurchase] = useState(newPurchaseDraft);
+  const [payment, setPayment] = useState({ supplier: "", paymentDate: today, amount: "", method: "Transferencia", reference: "", note: "" });
+  const [expense, setExpense] = useState({ expenseDate: today, area: "Fábrica", category: "Servicios", concept: "", amount: "", notes: "", employee: "", payrollPeriod: today.slice(0,7), paymentStatus: "Pendiente" });
+  const [invoiceLines, setInvoiceLines] = useState<InvoiceLineDraft[]>([createInvoiceLine("excluded")]);
+  const [purchaseBaseline, setPurchaseBaseline] = useState(() => JSON.stringify({ purchase, invoiceLines, isCreditNote }));
+  const [discardPurchaseOpen, setDiscardPurchaseOpen] = useState(false);
+  const closePurchase = () => {
+    setDiscardPurchaseOpen(false);
+    setPurchaseOpen(false);
+    setEditingPurchaseId(null);
+  };
+  const requestPurchaseClose = () => {
+    if (savingPurchase) return;
+    if (JSON.stringify({ purchase, invoiceLines, isCreditNote }) !== purchaseBaseline) {
+      setDiscardPurchaseOpen(true);
+    } else {
+      closePurchase();
+    }
+  };
+  const tabs: [CostTab, string, typeof Calculator][] = [
+    ["resumen", "Resumen", LayoutDashboard], ["compras", "Comprobantes", PackagePlus], ["vencimientos", "Vencimientos", AlertTriangle], ["alertas", "Alertas de precios", AlertTriangle], ["gastos", "Análisis de gastos", Calculator], ["iva", "IVA fiscal", FileText], ["pagos", "Pagos", WalletCards],
+    ["proveedores", "Proveedores", WalletCards], ["materias", "Insumos / Servicios", Boxes],
+    ["formulas", "Fórmulas", FlaskConical],
+  ];
+  const total = costCenters.reduce((sum, item) => sum + item.amount, 0);
+  const activeSupplier = suppliers.find((item) => item.name === purchase.supplier) ?? { id: 0, name: purchase.supplier, taxMode: "Revisar", category: "", debt: 0, invoices: "0 facturas", date: "Sin compras" };
+  const calculatedInvoiceLines = invoiceLines.map((line) => {
+    const product = materials.find((item) => item.name === line.product);
+    return calculateInvoiceLine(line, line.kind === "material" ? Number(product?.vat ?? 21) : Number(line.vatRate || 21));
+  });
+  const invoiceNet = calculatedInvoiceLines.reduce((sum, line) => sum + line.net, 0);
+  const invoiceTax = calculatedInvoiceLines.reduce((sum, line) => sum + line.vat, 0);
+  const invoiceGross = calculatedInvoiceLines.reduce((sum, line) => sum + line.gross, 0);
+  const invoiceVat21 = calculatedInvoiceLines.filter((line) => line.vatRate === 21).reduce((sum, line) => sum + line.vat, 0);
+  const invoiceVat105 = calculatedInvoiceLines.filter((line) => line.vatRate === 10.5).reduce((sum, line) => sum + line.vat, 0);
+  const monthlyVat21 = purchases.reduce((sum, row) => sum + row.vat21, 0);
+  const monthlyVat105 = purchases.reduce((sum, row) => sum + row.vat105, 0);
+  const [categoryRows, setCategoryRows] = useState<{key:string;name:string}[]>([]);
+  const [categoriesOpen, setCategoriesOpen] = useState(false);
+  const [categoryDraft, setCategoryDraft] = useState({key:"",name:""});
+  const [categoryError, setCategoryError] = useState("");
+  const [savingCategory, setSavingCategory] = useState(false);
+  const expenseCategoryRows = [...categoryRows];
+  for (const required of [{key:"Administración",name:"Administración"},{key:"Logística",name:"Logística"}]) {
+    if (!expenseCategoryRows.some(row => row.key.toLocaleLowerCase("es-AR") === required.key.toLocaleLowerCase("es-AR") || row.name.toLocaleLowerCase("es-AR") === required.name.toLocaleLowerCase("es-AR"))) expenseCategoryRows.push(required);
+  }
+  const expenseCategories = expenseCategoryRows.map(row => row.key);
+  const categoryLabel = (key: string) => expenseCategoryRows.find(row => row.key === key)?.name ?? key;
+  const saveCategory = async () => {
+    setSavingCategory(true); setCategoryError("");
+    try {
+      const response = await fetch("/api/operations", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({action:"save-expense-category",name:categoryDraft.name,...(categoryDraft.key ? {key:categoryDraft.key} : {})})});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "No se pudo guardar la categoría.");
+      await loadCostData(); setCategoryDraft({key:"",name:""});
+    } catch(error) { setCategoryError(error instanceof Error ? error.message : "No se pudo guardar la categoría."); }
+    finally { setSavingCategory(false); }
+  };
+  const formulaMaterials = materials.filter((item) => (item.kind ?? "material") === "material");
+  const normalizedFormulaQuery = formulaQuery.trim().toLocaleLowerCase("es-AR").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const filteredFormulas = formulas.filter((row) => {
+    if (!normalizedFormulaQuery) return true;
+    return [row.name, row.productName, row.productCode, row.batch]
+      .join(" ")
+      .toLocaleLowerCase("es-AR")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .includes(normalizedFormulaQuery);
+  });
+  const filteredMaterials = materials.filter((item) => {
+    const query = materialQuery.trim().toLocaleLowerCase("es-AR");
+    if (!query) return true;
+    const unitLabel = (item.kind ?? "material") === "material"
+      ? item.unit === "unidad" ? "unidad" : "kilogramo kg"
+      : "servicio gasto";
+    return [item.name, item.category ?? "Materia prima", item.kind ?? "material", unitLabel]
+      .join(" ")
+      .toLocaleLowerCase("es-AR")
+      .includes(query);
+  });
+  const selectedSupplier = suppliers.find((item) => item.name === selectedSupplierName) ?? suppliers[0];
+  const supplierLedger = useMemo(() => {
+    if (!selectedSupplier) return [];
+    const movements = [
+      ...purchases.filter((row) => row.supplierId === selectedSupplier.id && row.paymentStatus === "cuenta_corriente").map((row) => ({ dateKey: row.invoiceDate, date: row.date, detail: row.documentType === "credit_note" ? `Nota de crédito · ${row.invoice}` : row.invoice, debit: Math.max(0, row.total), credit: Math.max(0, -row.total) })),
+      ...payments.filter((row) => row.supplierId === selectedSupplier.id).map((row) => ({ dateKey: row.paymentDate, date: row.date, detail: `Pago · ${row.method} ${row.reference}`, debit: 0, credit: row.amount })),
+      ...supplierAdjustments.filter((row) => row.supplierId === selectedSupplier.id).map((row) => ({
+        dateKey: row.movementDate, date: new Date(row.movementDate + "T12:00:00").toLocaleDateString("es-AR"),
+        detail: "Ajuste · " + row.concept, debit: Math.max(0, row.amount), credit: Math.max(0, -row.amount),
+      })),
+    ].sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+    let balance = 0;
+    return movements.map((movement) => {
+      balance += movement.debit - movement.credit;
+      return { ...movement, balance };
+    });
+  }, [purchases, payments, supplierAdjustments, selectedSupplier]);
+
+  const availableBaseFormulas = formulas.filter((candidate) => {
+    const visited = new Set<number>();
+    const dependsOnCurrent = (id: number): boolean => {
+      const row = formulas.find((item) => item.id === id);
+      if (!row) return true;
+      if (row.id === formula.id || (formula.productCode && row.productCode === formula.productCode)) return true;
+      if (visited.has(id)) return false;
+      visited.add(id);
+      return row.items.some((item) => item.recipeId != null && dependsOnCurrent(item.recipeId));
+    };
+    return !dependsOnCurrent(candidate.id);
+  });
+  const ingredientUnitCost = (item: FormulaDraft["items"][number]) => item.recipeId
+    ? Number(formulas.find((row) => String(row.id) === item.recipeId)?.perKg ?? 0)
+    : Number(materials.find((row) => String(row.id) === item.materialId)?.cost ?? 0);
+  const formulaCost = formula.items.reduce((sum, item) => {
+    return sum + (Number(item.quantityKg.replace(",", ".")) || 0) * ingredientUnitCost(item);
+  }, 0);
+  const formulaQuantityTotal = formula.items.reduce((sum, item) => sum + (Number(item.quantityKg.replace(",", ".")) || 0), 0);
+  const formulaTotalInTenThousandths = Math.round(formulaQuantityTotal * 10000);
+  const formulaIsValid = formula.hasWaste ? formulaTotalInTenThousandths > 10000 : formulaTotalInTenThousandths === 10000;
+  const formulaDifference = 1 - formulaQuantityTotal;
+  const formulaWasteKg = Math.max(0, formulaQuantityTotal - 1);
+  const formulaYieldPercent = formulaQuantityTotal > 0 ? 100 / formulaQuantityTotal : 0;
+  const selectedFormulaProfile = productProfiles.find((item) => item.code === formula.productCode);
+  const selectedFormulaCatalogProduct = activeProductCatalog().find((item) => item.code === formula.productCode);
+  const formulaPresentationCost = Number(selectedFormulaProfile?.packageWeightKg ?? 0) > 0
+    ? formulaCost * Number(selectedFormulaProfile?.packageWeightKg)
+    : null;
+  const filteredPurchases = purchases.filter((row) => {
+    const query = purchaseQuery.trim().toLowerCase();
+    return !query || row.invoice.toLowerCase().includes(query) || row.supplier.toLowerCase().includes(query);
+  });
+  const invoiceDueDay = (row: CostPurchaseRow) => row.dueDate ? Math.round((new Date(`${row.dueDate}T12:00:00`).getTime() - new Date(`${today}T12:00:00`).getTime()) / 86400000) : null;
+  const invoicesWithDueDate = purchases.filter((row) => row.documentType !== "credit_note" && row.dueDate && row.paymentStatus !== "pagada").sort((a, b) => String(a.dueDate).localeCompare(String(b.dueDate)));
+  const overdueInvoices = invoicesWithDueDate.filter((row) => Number(invoiceDueDay(row)) < 0);
+  const dueSoonInvoices = invoicesWithDueDate.filter((row) => { const days = invoiceDueDay(row); return days != null && days >= 0 && days <= 5; });
+  const futureDueInvoices = invoicesWithDueDate.filter((row) => Number(invoiceDueDay(row)) > 5);
+  const uniqueMaterialPurchases = new Map<string, { product: string; purchaseId: number; invoiceDate: string; invoice: string; supplier: string; unitNet: number }>();
+  purchases.filter((row) => row.documentType !== "credit_note").forEach((purchaseRow) => {
+    (purchaseRow.lines ?? []).filter((line) => line.kind === "material").forEach((line) => {
+      const key = `${line.product.toLocaleLowerCase("es-AR")}|${purchaseRow.id}`;
+      if (!uniqueMaterialPurchases.has(key)) uniqueMaterialPurchases.set(key, { product: line.product, purchaseId: purchaseRow.id, invoiceDate: purchaseRow.invoiceDate, invoice: purchaseRow.invoice, supplier: purchaseRow.supplier, unitNet: Number(line.unitNet) });
+    });
+  });
+  const materialPriceHistory = new Map<string, Array<{ product: string; purchaseId: number; invoiceDate: string; invoice: string; supplier: string; unitNet: number }>>();
+  Array.from(uniqueMaterialPurchases.values()).forEach((entry) => {
+    const key = entry.product.toLocaleLowerCase("es-AR");
+    materialPriceHistory.set(key, [...(materialPriceHistory.get(key) ?? []), entry]);
+  });
+  const priceAlerts = Array.from(materialPriceHistory.values()).map((history) => {
+    const ordered = [...history].sort((a, b) => b.invoiceDate.localeCompare(a.invoiceDate) || b.purchaseId - a.purchaseId);
+    const current = ordered[0];
+    const previous = ordered[1];
+    if (!current || !previous || previous.unitNet <= 0) return null;
+    const difference = current.unitNet - previous.unitNet;
+    const percentage = difference / previous.unitNet * 100;
+    return { product: current.product, current, previous, difference, percentage };
+  }).filter((alert): alert is NonNullable<typeof alert> => alert != null && Math.abs(alert.percentage) >= 0.01).sort((a, b) => b.percentage - a.percentage);
+  const priceIncreaseAlerts = priceAlerts.filter((alert) => alert.difference > 0);
+  const priceDecreaseAlerts = priceAlerts.filter((alert) => alert.difference < 0);
+  const averagePriceIncrease = priceIncreaseAlerts.length ? priceIncreaseAlerts.reduce((sum, alert) => sum + alert.percentage, 0) / priceIncreaseAlerts.length : 0;
+  const purchaseExpenseRows: ExpenseAnalysisRow[] = purchases.flatMap((row) => {
+    const allocations = row.allocations?.length
+      ? row.allocations
+      : [{ kind: "material" as const, category: "Materia prima", center: row.costCenter || row.center || "Sin asignar", description: row.detail || "Compra de mercadería", gross: Number(row.grossTotal || row.total) }];
+    return allocations.map((allocation, index) => ({
+      id: `purchase-${row.id}-${index}`,
+      date: row.invoiceDate,
+      center: allocation.center || "Sin asignar",
+      category: allocation.kind === "material" ? "Materia prima" : allocation.category || "Otros",
+      kind: allocation.kind,
+      concept: allocation.description,
+      supplier: row.supplier,
+      invoice: row.invoice,
+      amount: Number(allocation.gross),
+    }));
+  });
+  const legacyExpenseAnalysisRows: ExpenseAnalysisRow[] = expenseRows.map((row) => ({
+    id: `legacy-${row.id}`,
+    date: row.expenseDate,
+    center: row.area || "Sin asignar",
+    category: row.category || "Otros",
+    kind: row.category === "Servicios" ? "service" : "expense",
+    concept: row.concept,
+    supplier: row.employee || "Sin proveedor",
+    invoice: row.notes || "Sin comprobante",
+    amount: Number(row.amount),
+  }));
+  const expenseAnalysisRows = [...purchaseExpenseRows, ...legacyExpenseAnalysisRows].sort((a, b) => b.date.localeCompare(a.date));
+  const expenseCenters = Array.from(new Set(expenseAnalysisRows.map((row) => row.center))).sort((a, b) => a.localeCompare(b, "es"));
+  const expenseAnalysisCategories = Array.from(new Set(expenseAnalysisRows.map((row) => row.category))).sort((a, b) => a.localeCompare(b, "es"));
+  const expenseAnalysisSuppliers = Array.from(new Set(expenseAnalysisRows.map((row) => row.supplier))).sort((a, b) => a.localeCompare(b, "es"));
+  const filteredExpenseAnalysisRows = expenseAnalysisRows.filter((row) =>
+    (!expenseDateFrom || row.date >= expenseDateFrom)
+    && (!expenseDateTo || row.date <= expenseDateTo)
+    && (expenseCenterFilter === "Todos" || row.center === expenseCenterFilter)
+    && (expenseCategoryFilter === "Todas" || row.category === expenseCategoryFilter)
+    && (expenseSupplierFilter === "Todos" || row.supplier === expenseSupplierFilter)
+  );
+  const expenseAnalysisTotal = filteredExpenseAnalysisRows.reduce((sum, row) => sum + row.amount, 0);
+  const expenseMaterialTotal = filteredExpenseAnalysisRows.filter((row) => row.kind === "material").reduce((sum, row) => sum + row.amount, 0);
+  const expenseOperatingTotal = expenseAnalysisTotal - expenseMaterialTotal;
+  const expenseInvoiceCount = new Set(filteredExpenseAnalysisRows.map((row) => `${row.supplier}|${row.invoice}|${row.date}`)).size;
+  const expenseByCategory = expenseAnalysisCategories.map((category) => ({ category, amount: filteredExpenseAnalysisRows.filter((row) => row.category === category).reduce((sum, row) => sum + row.amount, 0) })).filter((row) => row.amount > 0).sort((a, b) => b.amount - a.amount);
+  const expenseBySupplier = expenseAnalysisSuppliers.map((supplierName) => ({ supplier: supplierName, amount: filteredExpenseAnalysisRows.filter((row) => row.supplier === supplierName).reduce((sum, row) => sum + row.amount, 0) })).filter((row) => row.amount > 0).sort((a, b) => b.amount - a.amount);
+  const comparisonMonths = Array.from({ length: 4 }, (_, index) => {
+    const currentYear = Number(today.slice(0, 4));
+    const currentMonth = Number(today.slice(5, 7)) - 1;
+    const date = new Date(currentYear, currentMonth - (3 - index), 1);
+    return {
+      key: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`,
+      label: date.toLocaleDateString("es-AR", { month: "long", year: "numeric" }),
+      shortLabel: date.toLocaleDateString("es-AR", { month: "short" }).replace(".", "").toUpperCase(),
+      current: index === 3,
+    };
+  });
+  const comparisonCenters = invoiceCostCenters;
+  const expenseComparison = comparisonCenters.map((center) => {
+    const values = comparisonMonths.map((month) => expenseAnalysisRows.filter((row) => row.center === center && row.date.slice(0, 7) === month.key).reduce((sum, row) => sum + row.amount, 0));
+    return { center, values, total: values.reduce((sum, value) => sum + value, 0) };
+  });
+  const comparisonMonthTotals = comparisonMonths.map((_, monthIndex) => expenseComparison.reduce((sum, center) => sum + center.values[monthIndex], 0));
+  const comparisonGrandTotal = comparisonMonthTotals.reduce((sum, value) => sum + value, 0);
+  const comparisonMaxMonth = Math.max(...comparisonMonthTotals, 1);
+  const currentMonthVariation = comparisonMonthTotals[2] > 0 ? (comparisonMonthTotals[3] / comparisonMonthTotals[2] - 1) * 100 : null;
+  const expenseCategoryComparison = expenseAnalysisCategories.map((category) => {
+    const values = comparisonMonths.map((month) => expenseAnalysisRows.filter((row) => row.category === category && row.date.slice(0, 7) === month.key).reduce((sum, row) => sum + row.amount, 0));
+    return { category, values, total: values.reduce((sum, value) => sum + value, 0) };
+  }).filter((row) => row.total > 0).sort((a, b) => b.total - a.total);
+
+  const loadCostData = async () => {
+    const response = await fetch("/api/operations");
+    const data = await response.json() as {
+      expenseCategories?: {key:string;name:string}[];
+      operatingExpenses?: FinancialExpense[];
+      rawMaterials?: RawMaterial[];
+      purchases?: CostPurchaseRow[];
+      supplierAdjustments?: SupplierAdjustment[];
+      supplierPayments?: SupplierPaymentRow[];
+      suppliers?: SupplierCostProfile[];
+      formulas?: FormulaRecord[];
+      formulaReferencesAvailable?: boolean;
+      productProfiles?: ProductProfile[];
+      error?: string;
+    };
+    if (!response.ok) throw new Error(data.error ?? "No se pudieron cargar los datos de costos.");
+    const loadedMaterials = data.rawMaterials ?? [];
+    const loadedSuppliers = data.suppliers ?? [];
+    setCategoryRows(data.expenseCategories ?? []);
+    setExpenseRows(data.operatingExpenses ?? []);
+    setMaterials(loadedMaterials);
+    setPurchases(data.purchases ?? []);
+    setSupplierAdjustments(data.supplierAdjustments ?? []);
+    setPayments(data.supplierPayments ?? []);
+    setSuppliers(loadedSuppliers);
+    setFormulas(data.formulas ?? []);
+    setFormulaReferencesAvailable(data.formulaReferencesAvailable === true);
+    setProductProfiles(data.productProfiles ?? []);
+    setSelectedSupplierName((current) => current && loadedSuppliers.some((item) => item.name === current) ? current : loadedSuppliers[0]?.name ?? "");
+    setPayment((current) => ({ ...current, supplier: current.supplier && loadedSuppliers.some((item) => item.name === current.supplier) ? current.supplier : loadedSuppliers[0]?.name ?? "" }));
+     setInvoiceLines((current) => current.map((line) => ({ ...line, product: line.kind !== "material" || (line.product && loadedMaterials.some((item) => item.name === line.product)) ? line.product : "" })));
+  };
+
+  useEffect(() => {
+    loadCostData().catch((loadError) => setExpenseError(loadError instanceof Error ? loadError.message : "No se pudieron cargar los datos de costos."));
+  }, []);
+
+  const isPayroll = ["Sueldos", "Cargas sociales", "Otros costos laborales"].includes(expense.category);
+  const [payingExpense, setPayingExpense] = useState<number | null>(null);
+  const openPayroll = () => { setTab("gastos"); setExpenseError(""); setExpense({...expense, category:"Sueldos", concept:"", amount:"", employee:"", notes:"", payrollPeriod:today.slice(0,7), paymentStatus:"Pendiente"}); setExpenseOpen(true); };
+  const payExpense = async (id: number) => {
+    setPayingExpense(id); setExpenseError("");
+    try {
+      const response = await fetch("/api/operations", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({action:"pay-expense", id})});
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "No se pudo registrar el pago.");
+      setExpenseRows(rows => rows.map(row => row.id === id ? data.expense : row));
+    } catch (error) { setExpenseError(error instanceof Error ? error.message : "No se pudo registrar el pago."); }
+    finally { setPayingExpense(null); }
+  };
+  const saveExpense = async () => {
+    const amount = Number(expense.amount.replace(/\./g, "").replace(",", "."));
+    if (!Number.isFinite(amount) || amount <= 0 || (isPayroll ? !expense.employee.trim() || !expense.payrollPeriod : !expense.concept.trim())) {
+      setExpenseError("Completá el concepto y un importe mayor a cero.");
+      return;
+    }
+    setSavingExpense(true); setExpenseError("");
+    try {
+      const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "register-expense", expense: { ...expense, amount, concept: isPayroll ? `${expense.category} · ${expense.employee.trim()} · ${expense.payrollPeriod}` : expense.concept } }) });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "No se pudo guardar el gasto.");
+      await loadCostData();
+      setExpenseOpen(false);
+      setExpense({ expenseDate: today, area: "Fábrica", category: "Servicios", concept: "", amount: "", notes: "", employee: "", payrollPeriod: today.slice(0,7), paymentStatus: "Pendiente" });
+    } catch (saveError) {
+      setExpenseError(saveError instanceof Error ? saveError.message : "No se pudo guardar el gasto.");
+    } finally { setSavingExpense(false); }
+  };
+
+  const resetSupplierDraft = () => {
+    setEditingSupplierId(null);
+    setSupplier({ name: "", taxMode: "con_iva", category: "Materia prima" });
+    setSupplierError("");
+  };
+
+  const openNewSupplier = () => {
+    resetSupplierDraft();
+    setSupplierMessage("");
+    setSupplierOpen(true);
+  };
+
+  const openEditSupplier = (row: SupplierCostProfile) => {
+    setEditingSupplierId(row.id);
+    setSupplier({
+      name: row.name,
+      taxMode: row.taxMode === "Con IVA" ? "con_iva" : row.taxMode === "Sin IVA" ? "sin_iva" : "revisar",
+      category: row.category || "Materia prima",
+    });
+    setSupplierError("");
+    setSupplierMessage("");
+    setSupplierProfileOpen(false);
+    setSupplierOpen(true);
+  };
+
+  const openSupplierProfile = (row: SupplierCostProfile) => {
+    setSelectedSupplierName(row.name);
+    setSupplierError("");
+    setSupplierMessage("");
+    setSupplierProfileOpen(true);
+  };
+
+  const saveSupplier = async () => {
+    if (!supplier.name.trim()) {
+      setSupplierError("Ingresá el nombre del proveedor.");
+      return;
+    }
+    setSavingSupplier(true); setSupplierError(""); setSupplierMessage("");
+    try {
+      const action = editingSupplierId != null ? "update-supplier" : "save-supplier";
+      const response = await fetch("/api/operations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, supplierId: editingSupplierId, supplier }),
+      });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "No se pudo guardar el proveedor.");
+      const savedName = supplier.name.trim();
+      await loadCostData();
+      setSelectedSupplierName(savedName);
+      setSupplierOpen(false);
+      setSupplierMessage(editingSupplierId != null ? "Proveedor actualizado correctamente." : "Proveedor creado correctamente.");
+      resetSupplierDraft();
+    } catch (saveError) {
+      setSupplierError(saveError instanceof Error ? saveError.message : "No se pudo guardar el proveedor.");
+    } finally { setSavingSupplier(false); }
+  };
+
+  const archiveSupplier = async (row: SupplierCostProfile) => {
+    setArchivingSupplierId(row.id);
+    setSupplierError("");
+    setSupplierMessage("");
+    try {
+      const response = await fetch("/api/operations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "archive-supplier", supplierId: row.id }),
+      });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "No se pudo archivar el proveedor.");
+      setSupplierProfileOpen(false);
+      await loadCostData();
+      setSupplierMessage(`${row.name} fue archivado. Sus facturas, pagos y movimientos anteriores se conservaron.`);
+    } catch (saveError) {
+      setSupplierMessage("");
+      setSupplierError(saveError instanceof Error ? saveError.message : "No se pudo archivar el proveedor.");
+    } finally { setArchivingSupplierId(null); }
+  };
+
+  const resetMaterialDraft = () => {
+    setEditingMaterialName(null);
+    setMaterial({ name: "", kind: "material", category: "Materia prima", unit: "kg", contentPerPackage: "1", vat: "21" });
+    setMaterialError("");
+  };
+
+  const openNewMaterial = () => {
+    resetMaterialDraft();
+    setMaterialMessage("");
+    setMaterialOpen(true);
+  };
+
+  const openEditMaterial = (row: RawMaterial) => {
+    setEditingMaterialName(row.name);
+    setMaterial({
+      name: row.name,
+      kind: row.kind ?? "material",
+      category: row.category ?? "Materia prima",
+      unit: row.unit === "unidad" ? "unidad" : "kg",
+      contentPerPackage: String(row.contentPerPackage ?? row.pack.match(/[\d,.]+/)?.[0] ?? "1").replace(".", ","),
+      vat: String(row.vat),
+    });
+    setMaterialError("");
+    setMaterialMessage("");
+    setMaterialOpen(true);
+  };
+
+  const saveMaterial = async () => {
+    const contentPerPackage = material.kind === "material" ? Number(material.contentPerPackage.replace(",", ".")) : 1;
+    if (!material.name.trim() || !contentPerPackage || contentPerPackage <= 0) {
+      setMaterialError(material.kind === "material" ? "Completá el nombre y un contenido por envase mayor a cero." : "Completá el nombre del insumo o servicio.");
+      return;
+    }
+    setSavingMaterial(true); setMaterialError(""); setMaterialMessage("");
+    try {
+      const action = editingMaterialName ? "update-raw-material" : "register-raw-material";
+      const response = await fetch("/api/operations", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action,
+          originalName: editingMaterialName,
+          material: { ...material, contentPerPackage, vat: Number(material.vat) },
+        }),
+      });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "No se pudo guardar el insumo o servicio.");
+      await loadCostData();
+      setMaterialOpen(false);
+      setMaterialMessage(editingMaterialName ? "Insumo o servicio actualizado correctamente." : "Insumo o servicio creado correctamente.");
+      resetMaterialDraft();
+    } catch (saveError) {
+      setMaterialError(saveError instanceof Error ? saveError.message : "No se pudo guardar el insumo o servicio.");
+    } finally { setSavingMaterial(false); }
+  };
+
+  const archiveMaterial = async (row: RawMaterial) => {
+    setArchivingMaterial(row.name);
+    setMaterialError("");
+    setMaterialMessage("");
+    try {
+      const response = await fetch("/api/operations", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "archive-raw-material", name: row.name }),
+      });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "No se pudo archivar el insumo o servicio.");
+      await loadCostData();
+      setMaterialMessage(`${row.name} fue archivado. Las compras y movimientos anteriores se conservaron.`);
+    } catch (saveError) {
+      setMaterialMessage("");
+      setMaterialError(saveError instanceof Error ? saveError.message : "No se pudo archivar el insumo o servicio.");
+    } finally { setArchivingMaterial(""); }
+  };
+
+  const saveSupplierAdjustment = async () => {
+    const amount = parseInvoiceAmount(adjustment.amount);
+    const concept = adjustment.concept.trim();
+    if (savingAdjustment || !selectedSupplier) return;
+    if (!adjustment.movementDate || !adjustment.direction || !concept || !Number.isFinite(amount) || amount <= 0) {
+      setAdjustmentError("Completá la fecha, el tipo de ajuste, el concepto y un importe mayor a cero.");
+      return;
+    }
+    setSavingAdjustment(true);
+    setAdjustmentError("");
+    try {
+      const response = await fetch("/api/operations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "register-supplier-adjustment",
+          adjustment: { ...adjustment, concept, supplierId: selectedSupplier.id, amount: adjustment.direction === "debit" ? amount : -amount },
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "No se pudo guardar el ajuste.");
+      await loadCostData();
+      setAdjustmentOpen(false);
+    } catch (error) {
+      setAdjustmentError(error instanceof Error ? error.message : "No se pudo guardar el ajuste.");
+    } finally {
+      setSavingAdjustment(false);
+    }
+  };
+
+  const openNewPurchase = (kind: InvoiceLineKind = "material", creditNote = false) => {
+    setIsCreditNote(creditNote);
+    setEditingPurchaseId(null);
+    setSelectedPurchase(null);
+    setPurchaseActionError("");
+    setPurchaseError("");
+    const nextPurchase = newPurchaseDraft();
+    const nextLines = [createInvoiceLine(defaultInvoicePriceMode("Revisar"), kind)];
+    setPurchase(nextPurchase);
+    setInvoiceLines(nextLines);
+    setPurchaseBaseline(JSON.stringify({ purchase: nextPurchase, invoiceLines: nextLines, isCreditNote: creditNote }));
+    setDiscardPurchaseOpen(false);
+    setPurchaseOpen(true);
+  };
+
+  const openPurchaseDetail = (row: CostPurchaseRow) => {
+    setSelectedPurchase(row);
+    setPurchaseActionError("");
+    setPurchaseDetailOpen(true);
+  };
+
+  const editPurchase = (row: CostPurchaseRow) => {
+    setIsCreditNote(row.documentType === "credit_note");
+    setEditingPurchaseId(row.id);
+    setPurchaseError("");
+    setPurchaseActionError("");
+    const nextPurchase = {
+      supplier: row.supplier,
+      invoice: row.invoice,
+      invoiceDate: row.invoiceDate,
+      dueDate: row.dueDate ?? "",
+      payment: row.paymentStatus === "cuenta_corriente" ? "Cuenta corriente" : "Pagado",
+    };
+    const nextLines: InvoiceLineDraft[] = (row.lines?.length ? row.lines : (row.allocations ?? []).map((allocation) => ({
+      id: 0, product: allocation.description, quantity: 1, unitNet: allocation.gross, vatRate: 0, vatAmount: 0, total: allocation.gross, finalCostPerUnit: allocation.gross, kind: allocation.kind, category: allocation.category, center: allocation.center, priceMode: "black" as InvoicePriceMode,
+    }))).map((line) => ({
+      product: line.product,
+      quantity: String(line.quantity).replace(".", ","),
+      price: String(Math.abs(line.unitNet)).replace(".", ","),
+      priceMode: line.vatRate > 0 ? "excluded" : "black",
+      kind: line.kind,
+      category: line.category,
+      center: line.center,
+      vatRate: String(line.vatRate),
+    }));
+    setPurchaseDetailOpen(false);
+    setPurchase(nextPurchase);
+    setInvoiceLines(nextLines);
+    setPurchaseBaseline(JSON.stringify({ purchase: nextPurchase, invoiceLines: nextLines, isCreditNote: row.documentType === "credit_note" }));
+    setDiscardPurchaseOpen(false);
+    setPurchaseOpen(true);
+  };
+
+  const markPurchasePaid = async (row: CostPurchaseRow) => {
+    if (!window.confirm(`¿Marcar la factura ${row.invoice} de ${row.supplier} como pagada?`)) return;
+    setPayingPurchaseId(row.id);
+    setPurchaseActionError("");
+    try {
+      const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "mark-purchase-paid", purchaseId: row.id }) });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "No se pudo marcar la factura como pagada.");
+      await loadCostData();
+      if (selectedPurchase?.id === row.id) {
+        setPurchaseDetailOpen(false);
+        setSelectedPurchase(null);
+      }
+    } catch (error) {
+      setPurchaseActionError(error instanceof Error ? error.message : "No se pudo marcar la factura como pagada.");
+    } finally {
+      setPayingPurchaseId(null);
+    }
+  };
+
+  const deletePurchase = async (row: CostPurchaseRow) => {
+    setDeletingPurchase(true);
+    setPurchaseActionError("");
+    try {
+      const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete-purchase", purchaseId: row.id }) });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "No se pudo eliminar la factura.");
+      await loadCostData();
+      setPurchaseDetailOpen(false);
+      setSelectedPurchase(null);
+    } catch (error) {
+      setPurchaseActionError(error instanceof Error ? error.message : "No se pudo eliminar la factura.");
+    } finally { setDeletingPurchase(false); }
+  };
+
+  const savePurchase = async () => {
+    const missingFields: string[] = [];
+    if (!purchase.supplier) missingFields.push("seleccioná el proveedor");
+    if (!purchase.invoice.trim()) missingFields.push("ingresá el número de comprobante");
+    if (!isCreditNote && !["Pagado", "Cuenta corriente"].includes(purchase.payment)) missingFields.push("seleccioná la forma de pago");
+    invoiceLines.forEach((line, index) => {
+      const missing = [];
+      if (!line.product || !materials.some((item) => item.name === line.product)) missing.push("seleccioná un insumo o servicio del catálogo");
+      if (!invoiceCostCenters.some((center) => center === line.center)) missing.push("seleccioná el destino");
+      if (!(Number(line.quantity.replace(",", ".")) > 0)) missing.push("ingresá la cantidad");
+      if (!(parseInvoiceAmount(line.price) > 0)) missing.push("ingresá el precio");
+      if (missing.length) missingFields.push(`renglón ${index + 1}: ${missing.join(", ")}`);
+    });
+    if (missingFields.length || !invoiceGross) {
+      const document = isCreditNote ? "la nota de crédito" : "la factura";
+      setPurchaseError(`No podés confirmar ${document}. ${missingFields.length ? `Revisá estos campos: ${missingFields.join("; ")}.` : "El total debe ser mayor a cero."}`);
+      return;
+    }
+    setSavingPurchase(true); setPurchaseError("");
+    try {
+      const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+        action: editingPurchaseId != null ? "update-purchase" : isCreditNote ? "register-credit-note" : "register-purchase", purchaseId: editingPurchaseId, purchase: isCreditNote ? { ...purchase, payment: "Cuenta corriente" } : purchase, supplierTaxMode: activeSupplier.taxMode,
+        lines: invoiceLines.map((line) => {
+          const profile = materials.find((item) => item.name === line.product);
+          return {
+            ...line,
+            vatRate: line.kind === "material" ? Number(profile?.vat ?? 21) : Number(line.vatRate || 21),
+            contentPerPackage: line.kind === "material" ? profile?.contentPerPackage ?? Number(profile?.pack.match(/[\d,.]+/)?.[0].replace(",", ".") ?? 1) : 1,
+            costUnit: line.kind === "material" ? profile?.unit ?? "kg" : "unidad",
+          };
+        }),
+        totals: { net: invoiceNet, vat: invoiceTax, gross: invoiceGross },
+      }) });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "No se pudo guardar la factura.");
+      await loadCostData();
+      setPurchaseOpen(false);
+      setEditingPurchaseId(null);
+      setSelectedPurchase(null);
+      setPurchase(newPurchaseDraft());
+      setInvoiceLines([createInvoiceLine(defaultInvoicePriceMode("Revisar"))]);
+    } catch (error) {
+      setPurchaseError(error instanceof Error ? error.message : "No se pudo guardar la factura.");
+    } finally { setSavingPurchase(false); }
+  };
+
+  const savePayment = async () => {
+    const amount = Number(payment.amount.replace(/\D/g, ""));
+    if (!payment.supplier || !amount) {
+      setPaymentError("Seleccioná un proveedor e ingresá un monto mayor a cero.");
+      return;
+    }
+    setSavingPayment(true); setPaymentError("");
+    try {
+      const response = await fetch("/api/operations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "register-supplier-payment", payment: { ...payment, amount } }) });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "No se pudo registrar el pago.");
+      await loadCostData();
+      setPaymentOpen(false);
+      setPayment((current) => ({ supplier: current.supplier, paymentDate: today, amount: "", method: "Transferencia", reference: "", note: "" }));
+    } catch (saveError) {
+      setPaymentError(saveError instanceof Error ? saveError.message : "No se pudo registrar el pago.");
+    } finally { setSavingPayment(false); }
+  };
+
+  const openFormula = (record?: FormulaRecord) => {
+    setFormulaError("");
+    if (record) {
+      setFormula({
+        id: record.id,
+        productCode: record.productCode,
+        name: record.name,
+        yieldKg: "1",
+        hasWaste: record.hasWaste,
+        items: record.items.map((item) => ({ materialId: item.materialId == null ? "" : String(item.materialId), recipeId: item.recipeId == null ? undefined : String(item.recipeId), ingredientType: item.recipeId == null ? "material" : "recipe", quantityKg: String(item.quantityKg).replace(".", ",") })),
+      });
+    } else {
+      setFormula({
+        id: null,
+        productCode: "",
+        name: "",
+        yieldKg: "1",
+        hasWaste: false,
+        items: [{ materialId: formulaMaterials[0]?.id ? String(formulaMaterials[0].id) : "", quantityKg: "" }],
+      });
+    }
+    setFormulaOpen(true);
+  };
+
+  const saveFormula = async () => {
+    const items = formula.items.map((item) => ({ materialId: item.recipeId ? null : Number(item.materialId), recipeId: item.recipeId ? Number(item.recipeId) : null, quantityKg: Number(item.quantityKg.replace(",", ".")) }));
+    const selectedProduct = activeProductCatalog().find((item) => item.code === formula.productCode);
+    const totalQuantityKg = items.reduce((sum, item) => sum + item.quantityKg, 0);
+    if ((formula.productCode && !selectedProduct) || !formula.name.trim() || items.length === 0 || items.some((item) => (!item.materialId && !item.recipeId) || !Number.isFinite(item.quantityKg) || item.quantityKg <= 0 || (item.recipeId && !availableBaseFormulas.some((row) => row.id === item.recipeId)))) {
+      setFormulaError("Completá el nombre de la fórmula y sus ingredientes. El producto del maestro es opcional.");
+      return;
+    }
+    if (new Set(items.map((item) => item.recipeId ? `recipe:${item.recipeId}` : `material:${item.materialId}`)).size !== items.length) {
+      setFormulaError("No repitas el mismo ingrediente dentro de una fórmula.");
+      return;
+    }
+    const totalInTenThousandths = Math.round(totalQuantityKg * 10000);
+    if ((!formula.hasWaste && totalInTenThousandths !== 10000) || (formula.hasWaste && totalInTenThousandths <= 10000)) {
+      setFormulaError(formula.hasWaste
+        ? "Una fórmula con desperdicio debe usar más de 1,0000 kg de ingredientes para obtener 1 kg final."
+        : `La fórmula debe sumar exactamente 1,0000 kg. Actualmente suma ${totalQuantityKg.toLocaleString("es-AR", { minimumFractionDigits: 4, maximumFractionDigits: 4 })} kg.`);
+      return;
+    }
+    setSavingFormula(true); setFormulaError("");
+    try {
+      const response = await fetch("/api/operations", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "save-recipe", recipe: { id: formula.id, productCode: formula.productCode, product: selectedProduct, name: formula.name, yieldKg: 1, hasWaste: formula.hasWaste, items } }),
+      });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "No se pudo guardar la fórmula.");
+      await loadCostData();
+      setFormulaOpen(false);
+    } catch (saveError) {
+      setFormulaError(saveError instanceof Error ? saveError.message : "No se pudo guardar la fórmula.");
+    } finally { setSavingFormula(false); }
+  };
+
+  return (
+    <section className="space-y-6">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div><Badge className="rounded-full bg-[#f4d5e1] text-[#983f62] hover:bg-[#f4d5e1]">Administración</Badge><h2 className="mt-3 text-3xl font-black tracking-tight">Costos y rentabilidad</h2><p className="mt-1 text-muted-foreground">Último costo pagado, gastos por centro y costo actualizado de cada sabor.</p></div>
+        <div className="flex flex-wrap gap-2"><Button onClick={() => openNewPurchase()} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Nueva factura</Button><Button variant="outline" onClick={() => {setCategoryError("");setCategoryDraft({key:"",name:""});setCategoriesOpen(true);}}>Administrar categorías</Button><Button variant="outline" onClick={openPayroll}><Plus /> Cargar sueldo</Button><Button onClick={() => openNewPurchase("material", true)} variant="outline" className="rounded-xl border-[#b64e77] text-[#a53d67]"><Plus /> Nueva nota de crédito</Button></div>
+      </div>
+      <div className="flex gap-2 overflow-x-auto rounded-2xl border bg-white p-2 shadow-sm">
+        {tabs.map(([id, label, Icon]) => <button key={id} onClick={() => setTab(id)} className={`flex shrink-0 items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold transition ${tab === id ? "bg-[#3b2931] text-white" : "text-muted-foreground hover:bg-[#fff1f6]"}`}><Icon className="size-4" />{label}</button>)}
+      </div>
+
+      {tab === "resumen" && <div className="space-y-5">
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{comparisonMonths.map((month, index) => { const previousTotal = index > 0 ? comparisonMonthTotals[index - 1] : 0; const variation = previousTotal > 0 ? (comparisonMonthTotals[index] / previousTotal - 1) * 100 : null; return <div key={month.key} className={`rounded-3xl border p-5 shadow-sm ${month.current ? "bg-[#3b2931] text-white" : "bg-white"}`}><div className="flex items-center justify-between gap-2"><p className={`text-sm font-black capitalize ${month.current ? "text-white" : ""}`}>{month.label}</p>{month.current && <Badge className="bg-[#f8dce7] text-[#a53d67]">En curso</Badge>}</div><p className="mt-3 text-2xl font-black">{money(comparisonMonthTotals[index])}</p><div className={`mt-4 h-2 overflow-hidden rounded-full ${month.current ? "bg-white/20" : "bg-[#f4e9ed]"}`}><div className={`h-full rounded-full ${month.current ? "bg-[#f2bfd2]" : "bg-[#a53d67]"}`} style={{ width: `${comparisonMonthTotals[index] / comparisonMaxMonth * 100}%` }}/></div><p className={`mt-2 text-xs ${month.current ? "text-white/70" : "text-muted-foreground"}`}>{variation == null ? "Sin base para comparar" : `${variation >= 0 ? "+" : ""}${variation.toLocaleString("es-AR", { maximumFractionDigits: 1 })}% vs. mes anterior`}</p></div>})}</div>
+        <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="flex flex-col gap-2 border-b p-5 sm:flex-row sm:items-end sm:justify-between"><div><h3 className="text-xl font-black">Detalle por destino</h3><p className="text-sm text-muted-foreground">Importes imputados a Fábrica y Av. de Mayo.</p></div>{currentMonthVariation != null && <Badge className={currentMonthVariation <= 0 ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"}>{currentMonthVariation >= 0 ? "+" : ""}{currentMonthVariation.toLocaleString("es-AR", { maximumFractionDigits: 1 })}% en el mes actual</Badge>}</div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Destino</TableHead>{comparisonMonths.map((month) => <TableHead key={month.key} className="min-w-36 text-right"><span className="capitalize">{month.shortLabel}</span>{month.current && <div className="text-[10px] font-normal text-[#a53d67]">EN CURSO</div>}</TableHead>)}<TableHead className="min-w-36 text-right">Total 4 meses</TableHead></TableRow></TableHeader><TableBody>{expenseComparison.map((row) => <TableRow key={row.center}><TableCell className="font-black">{row.center}</TableCell>{row.values.map((value, index) => <TableCell key={comparisonMonths[index].key} className={`text-right ${comparisonMonths[index].current ? "bg-[#fff7fa] font-black" : ""}`}>{value ? money(value) : "—"}</TableCell>)}<TableCell className="text-right font-black">{money(row.total)}</TableCell></TableRow>)}<TableRow className="bg-[#f7f3f5]"><TableCell className="font-black">TOTAL GENERAL</TableCell>{comparisonMonthTotals.map((value, index) => <TableCell key={comparisonMonths[index].key} className="text-right font-black">{money(value)}</TableCell>)}<TableCell className="text-right text-lg font-black">{money(comparisonGrandTotal)}</TableCell></TableRow></TableBody></Table></div></div>
+        <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="border-b p-5"><h3 className="text-xl font-black">Comparativo porcentual por categoría</h3><p className="text-sm text-muted-foreground">En cada mes se muestra el importe y qué porcentaje representa sobre el gasto total de ese mes.</p></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Categoría</TableHead>{comparisonMonths.map((month) => <TableHead key={month.key} className="min-w-44 text-right"><span className="capitalize">{month.label}</span>{month.current && <div className="text-[10px] font-normal text-[#a53d67]">EN CURSO</div>}</TableHead>)}<TableHead className="min-w-36 text-right">Total 4 meses</TableHead></TableRow></TableHeader><TableBody>{expenseCategoryComparison.map((row) => <TableRow key={categoryLabel(row.category)}><TableCell className="font-black">{categoryLabel(row.category)}</TableCell>{row.values.map((value, index) => { const percentage = comparisonMonthTotals[index] > 0 ? value / comparisonMonthTotals[index] * 100 : 0; return <TableCell key={comparisonMonths[index].key} className={`text-right ${comparisonMonths[index].current ? "bg-[#fff7fa]" : ""}`}><div className="font-black">{value ? money(value) : "—"}</div><div className={`text-xs font-bold ${value ? "text-[#a53d67]" : "text-muted-foreground"}`}>{value ? `${percentage.toLocaleString("es-AR", { maximumFractionDigits: 1 })}% del mes` : "0%"}</div></TableCell>})}<TableCell className="text-right"><div className="font-black">{money(row.total)}</div><div className="text-xs text-muted-foreground">{comparisonGrandTotal ? (row.total / comparisonGrandTotal * 100).toLocaleString("es-AR", { maximumFractionDigits: 1 }) : "0"}% del período</div></TableCell></TableRow>)}<TableRow className="bg-[#f7f3f5]"><TableCell className="font-black">TOTAL DEL MES</TableCell>{comparisonMonthTotals.map((value, index) => <TableCell key={comparisonMonths[index].key} className="text-right"><div className="font-black">{money(value)}</div><div className="text-xs font-bold text-[#a53d67]">100%</div></TableCell>)}<TableCell className="text-right"><div className="text-lg font-black">{money(comparisonGrandTotal)}</div><div className="text-xs font-bold text-[#a53d67]">100%</div></TableCell></TableRow></TableBody></Table></div></div>
+        <div className="rounded-2xl border border-[#efd8e1] bg-[#fff8fb] p-4 text-sm text-[#6f344b]"><b>Lectura del mes actual:</b> el importe está en curso y puede ser menor porque todavía no terminó el mes. Cada gasto se asigna al local indicado en su renglón de factura.</div>
+      </div>}
+
+      {tab === "compras" && <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="flex flex-col gap-3 border-b p-5 sm:flex-row sm:items-center sm:justify-between"><div><h3 className="text-xl font-black">Facturas y notas de crédito</h3><p className="text-sm text-muted-foreground">Abrí un comprobante para consultar sus renglones, editarlo o eliminarlo. Las notas de crédito descuentan gastos y saldo del proveedor.</p></div><div className="relative w-full sm:w-72"><Search className="absolute left-3 top-3 size-4 text-muted-foreground"/><Input value={purchaseQuery} onChange={(event) => setPurchaseQuery(event.target.value)} className="pl-9" placeholder="Buscar factura o proveedor" /></div></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Fecha / comprobante</TableHead><TableHead>Proveedor</TableHead><TableHead>Centro</TableHead><TableHead className="text-right">Neto</TableHead><TableHead className="text-right">IVA</TableHead><TableHead className="text-right">Total factura</TableHead><TableHead>Pago</TableHead><TableHead className="text-right">Acción</TableHead></TableRow></TableHeader><TableBody>{filteredPurchases.length === 0 && <TableRow><TableCell colSpan={8} className="py-10 text-center text-muted-foreground">No hay facturas que coincidan con la búsqueda.</TableCell></TableRow>}{filteredPurchases.map((row) => <TableRow key={row.id} className="cursor-pointer hover:bg-[#fff8fb]" onClick={() => openPurchaseDetail(row)}><TableCell className="whitespace-nowrap"><b>{row.invoice}</b><div className="text-xs text-muted-foreground">{row.date}</div></TableCell><TableCell><b>{row.supplier}</b><div className="text-xs text-muted-foreground">{row.detail}</div></TableCell><TableCell><Badge variant="outline">{row.center}</Badge></TableCell><TableCell className="text-right">{money(row.net)}</TableCell><TableCell className="text-right">{money(row.tax)}</TableCell><TableCell className="text-right font-black">{money(row.total)}</TableCell><TableCell><Badge className={row.status === "Pagado" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}>{row.status}</Badge></TableCell><TableCell className="text-right"><Button variant="outline" size="sm" onClick={(event) => { event.stopPropagation(); openPurchaseDetail(row); }}>Ver detalle</Button></TableCell></TableRow>)}</TableBody></Table></div></div>}
+
+      {tab === "vencimientos" && <div className="space-y-5">
+        <div className="grid gap-4 md:grid-cols-3"><div className="rounded-3xl border border-red-200 bg-red-50 p-5"><p className="text-sm font-bold text-red-700">Vencidas</p><p className="mt-1 text-3xl font-black text-red-900">{overdueInvoices.length}</p></div><div className="rounded-3xl border border-amber-200 bg-amber-50 p-5"><p className="text-sm font-bold text-amber-700">Vencen en hasta 5 días</p><p className="mt-1 text-3xl font-black text-amber-900">{dueSoonInvoices.length}</p></div><div className="rounded-3xl border bg-white p-5"><p className="text-sm font-bold text-muted-foreground">Próximas</p><p className="mt-1 text-3xl font-black">{futureDueInvoices.length}</p></div></div>
+        {purchaseActionError && <p className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{purchaseActionError}</p>}
+        {([{title:"Facturas vencidas",rows:overdueInvoices,tone:"text-red-700",empty:"No hay facturas vencidas."},{title:"Por vencer · próximos 5 días",rows:dueSoonInvoices,tone:"text-amber-700",empty:"No hay facturas por vencer dentro de los próximos 5 días."},{title:"Próximos vencimientos",rows:futureDueInvoices,tone:"text-foreground",empty:"No hay otros vencimientos futuros."}] as const).map((section)=><div key={section.title} className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="border-b p-5"><h3 className={`text-xl font-black ${section.tone}`}>{section.title}</h3></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Vencimiento</TableHead><TableHead>Factura</TableHead><TableHead>Proveedor</TableHead><TableHead className="text-right">Total</TableHead><TableHead>Estado</TableHead><TableHead className="text-right">Acción</TableHead></TableRow></TableHeader><TableBody>{section.rows.length===0&&<TableRow><TableCell colSpan={6} className="py-8 text-center text-muted-foreground">{section.empty}</TableCell></TableRow>}{section.rows.map((row)=>{const days=invoiceDueDay(row)??0;return <TableRow key={row.id} className="cursor-pointer hover:bg-[#fff8fb]" onClick={()=>openPurchaseDetail(row)}><TableCell className="font-black">{row.dueDateDisplay}</TableCell><TableCell>{row.invoice}</TableCell><TableCell>{row.supplier}</TableCell><TableCell className="text-right font-black">{money(row.total)}</TableCell><TableCell><Badge className={days<0?"bg-red-100 text-red-700":days<=5?"bg-amber-100 text-amber-800":"bg-slate-100 text-slate-700"}>{days<0?`Vencida hace ${Math.abs(days)} día${Math.abs(days)===1?"":"s"}`:days===0?"Vence hoy":`Faltan ${days} días`}</Badge></TableCell><TableCell className="text-right"><div className="flex justify-end gap-2"><Button variant="outline" size="sm" onClick={(event)=>{event.stopPropagation();openPurchaseDetail(row);}}>Ver factura</Button><Button size="sm" disabled={payingPurchaseId===row.id} onClick={(event)=>{event.stopPropagation();void markPurchasePaid(row);}} className="bg-emerald-600 text-white hover:bg-emerald-700"><Check className="size-4"/>{payingPurchaseId===row.id?"Guardando…":"Marcar pagada"}</Button></div></TableCell></TableRow>})}</TableBody></Table></div></div>)}
+      </div>}
+
+      {tab === "alertas" && <div className="space-y-5">
+        <div className="flex flex-col gap-4 rounded-3xl border bg-white p-6 shadow-sm lg:flex-row lg:items-center lg:justify-between"><div><Badge className="bg-amber-100 text-amber-800">Control de compras</Badge><h3 className="mt-3 text-2xl font-black">Alertas de cambios de precio</h3><p className="text-sm text-muted-foreground">Compara automáticamente la última factura de cada materia prima contra su compra anterior.</p></div><div className="rounded-2xl bg-[#fff7e8] px-5 py-3 text-sm text-amber-900"><b>{priceIncreaseAlerts.length} subas detectadas</b><div className="text-xs">Revisá especialmente las variaciones altas o no informadas.</div></div></div>
+        <div className="grid gap-4 sm:grid-cols-3"><div className="rounded-3xl border border-red-100 bg-red-50 p-5"><p className="text-sm font-bold text-red-700">Productos con suba</p><p className="mt-2 text-3xl font-black text-red-800">{priceIncreaseAlerts.length}</p><p className="mt-2 text-xs text-red-700">Última compra más cara</p></div><div className="rounded-3xl border border-emerald-100 bg-emerald-50 p-5"><p className="text-sm font-bold text-emerald-700">Productos con baja</p><p className="mt-2 text-3xl font-black text-emerald-800">{priceDecreaseAlerts.length}</p><p className="mt-2 text-xs text-emerald-700">Última compra más económica</p></div><div className="rounded-3xl border bg-white p-5 shadow-sm"><p className="text-sm font-bold text-muted-foreground">Suba promedio</p><p className="mt-2 text-3xl font-black">{averagePriceIncrease.toLocaleString("es-AR", { maximumFractionDigits: 1 })}%</p><p className="mt-2 text-xs text-muted-foreground">Entre los productos que aumentaron</p></div></div>
+        <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="border-b p-5"><h3 className="text-xl font-black">Último cambio por materia prima</h3><p className="text-sm text-muted-foreground">Los precios comparados son netos por unidad de compra, antes de IVA. Si cambió el proveedor, se muestran ambos.</p></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Materia prima</TableHead><TableHead>Compra anterior</TableHead><TableHead>Última compra</TableHead><TableHead className="text-right">Precio anterior</TableHead><TableHead className="text-right">Precio actual</TableHead><TableHead className="text-right">Diferencia</TableHead><TableHead className="text-right">Variación</TableHead></TableRow></TableHeader><TableBody>{priceAlerts.length === 0 && <TableRow><TableCell colSpan={7} className="py-12 text-center text-muted-foreground">Todavía no hay materias primas con dos compras distintas para comparar.</TableCell></TableRow>}{priceAlerts.map((alert) => <TableRow key={alert.product} className={alert.difference > 0 ? "bg-red-50/40" : "bg-emerald-50/30"}><TableCell className="font-black">{alert.product}</TableCell><TableCell><div className="font-medium">{alert.previous.supplier}</div><div className="text-xs text-muted-foreground">{new Date(`${alert.previous.invoiceDate}T12:00:00`).toLocaleDateString("es-AR")} · {alert.previous.invoice}</div></TableCell><TableCell><div className="font-medium">{alert.current.supplier}</div><div className="text-xs text-muted-foreground">{new Date(`${alert.current.invoiceDate}T12:00:00`).toLocaleDateString("es-AR")} · {alert.current.invoice}</div></TableCell><TableCell className="text-right">{invoiceMoney(alert.previous.unitNet)}</TableCell><TableCell className="text-right font-black">{invoiceMoney(alert.current.unitNet)}</TableCell><TableCell className={`text-right font-black ${alert.difference > 0 ? "text-red-700" : "text-emerald-700"}`}>{alert.difference > 0 ? "+" : ""}{invoiceMoney(alert.difference)}</TableCell><TableCell className="text-right"><Badge className={alert.difference > 0 ? "bg-red-100 text-red-700" : "bg-emerald-100 text-emerald-700"}>{alert.percentage > 0 ? "▲ +" : "▼ "}{alert.percentage.toLocaleString("es-AR", { maximumFractionDigits: 1 })}%</Badge></TableCell></TableRow>)}</TableBody></Table></div></div>
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><b>Cómo leerlo:</b> una suba puede deberse a un aumento real, cambio de presentación o cambio de proveedor. El sistema la marca para que puedan revisar la factura antes de darla por válida.</div>
+      </div>}
+
+      {tab === "gastos" && <div className="space-y-5">
+        <div className="rounded-3xl border bg-white p-5"><h3 className="text-xl font-black">Sueldos registrados</h3><p className="text-sm text-muted-foreground">El pago actualiza el mismo costo del período trabajado.</p>{expenseRows.filter(row=>row.payrollPeriod).map(row=><div key={row.id} className="flex flex-wrap items-center justify-between gap-3 border-b py-3"><span>{row.employee} · {row.payrollPeriod} · {row.area}</span><b>{money(row.amount)}</b><span>{row.paymentStatus}</span>{row.paymentStatus === "Pendiente" && <Button variant="outline" disabled={payingExpense !== null} onClick={()=>payExpense(row.id)}>Marcar pagado</Button>}</div>)}</div>
+        <div className="flex flex-col gap-4 rounded-3xl border bg-white p-6 shadow-sm lg:flex-row lg:items-center lg:justify-between">
+          <div><Badge className="bg-[#f8dce7] text-[#a53d67]">Control integral</Badge><h3 className="mt-3 text-2xl font-black">Análisis de gastos</h3><p className="text-sm text-muted-foreground">Incluye materias primas, servicios y demás gastos cargados por factura, distribuidos según su destino.</p></div>
+          <Button onClick={() => openNewPurchase("service")} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Cargar nueva factura</Button><Button variant="outline" onClick={openPayroll}><Plus /> Cargar sueldo</Button>
+        </div>
+        {expenseError && <div className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{expenseError}</div>}
+        <div className="grid gap-3 rounded-3xl border bg-white p-5 shadow-sm md:grid-cols-2 xl:grid-cols-5">
+          <label className="space-y-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">Desde<Input type="date" value={expenseDateFrom} onChange={(event) => setExpenseDateFrom(event.target.value)} className="font-normal normal-case text-foreground"/></label>
+          <label className="space-y-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">Hasta<Input type="date" value={expenseDateTo} onChange={(event) => setExpenseDateTo(event.target.value)} className="font-normal normal-case text-foreground"/></label>
+          <label className="space-y-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">Localidad / destino<select value={expenseCenterFilter} onChange={(event) => setExpenseCenterFilter(event.target.value)} className="h-10 w-full rounded-md border bg-white px-3 font-normal normal-case text-foreground"><option>Todos</option>{expenseCenters.map((center) => <option key={center}>{center}</option>)}</select></label>
+          <label className="space-y-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">Categoría<select value={expenseCategoryFilter} onChange={(event) => setExpenseCategoryFilter(event.target.value)} className="h-10 w-full rounded-md border bg-white px-3 font-normal normal-case text-foreground"><option>Todas</option>{expenseAnalysisCategories.map((category) => <option key={category} value={category}>{categoryLabel(category)}</option>)}</select></label>
+          <label className="space-y-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">Proveedor<select value={expenseSupplierFilter} onChange={(event) => setExpenseSupplierFilter(event.target.value)} className="h-10 w-full rounded-md border bg-white px-3 font-normal normal-case text-foreground"><option>Todos</option>{expenseAnalysisSuppliers.map((supplierName) => <option key={supplierName}>{supplierName}</option>)}</select></label>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-3xl bg-[#3b2931] p-5 text-white shadow-sm"><p className="text-sm font-bold text-white/70">Gasto total</p><p className="mt-2 text-3xl font-black">{money(expenseAnalysisTotal)}</p><p className="mt-2 text-xs text-white/60">Importes facturados del período</p></div>
+          <div className="rounded-3xl border bg-white p-5 shadow-sm"><p className="text-sm font-bold text-muted-foreground">Materias primas</p><p className="mt-2 text-2xl font-black">{money(expenseMaterialTotal)}</p><p className="mt-2 text-xs text-muted-foreground">{expenseAnalysisTotal ? (expenseMaterialTotal / expenseAnalysisTotal * 100).toLocaleString("es-AR", { maximumFractionDigits: 1 }) : "0"}% del total</p></div>
+          <div className="rounded-3xl border bg-white p-5 shadow-sm"><p className="text-sm font-bold text-muted-foreground">Servicios y otros</p><p className="mt-2 text-2xl font-black">{money(expenseOperatingTotal)}</p><p className="mt-2 text-xs text-muted-foreground">{expenseAnalysisTotal ? (expenseOperatingTotal / expenseAnalysisTotal * 100).toLocaleString("es-AR", { maximumFractionDigits: 1 }) : "0"}% del total</p></div>
+          <div className="rounded-3xl border bg-white p-5 shadow-sm"><p className="text-sm font-bold text-muted-foreground">Comprobantes</p><p className="mt-2 text-2xl font-black">{expenseInvoiceCount}</p><p className="mt-2 text-xs text-muted-foreground">{filteredExpenseAnalysisRows.length} renglones analizados</p></div>
+        </div>
+        <div className="grid gap-5 xl:grid-cols-2">
+          <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="border-b p-5"><h3 className="text-xl font-black">Gasto por categoría</h3><p className="text-sm text-muted-foreground">Participación dentro del período y destino seleccionados.</p></div><div className="divide-y">{expenseByCategory.length === 0 && <p className="p-8 text-center text-muted-foreground">No hay gastos para estos filtros.</p>}{expenseByCategory.map((row) => <div key={categoryLabel(row.category)} className="p-4"><div className="flex items-center justify-between gap-4"><span className="font-bold">{categoryLabel(row.category)}</span><span className="font-black">{money(row.amount)}</span></div><div className="mt-2 h-2 overflow-hidden rounded-full bg-[#f4e9ed]"><div className="h-full rounded-full bg-[#a53d67]" style={{ width: `${expenseAnalysisTotal ? Math.max(2, row.amount / expenseAnalysisTotal * 100) : 0}%` }}/></div><p className="mt-1 text-right text-xs text-muted-foreground">{expenseAnalysisTotal ? (row.amount / expenseAnalysisTotal * 100).toLocaleString("es-AR", { maximumFractionDigits: 1 }) : "0"}%</p></div>)}</div></div>
+          <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="border-b p-5"><h3 className="text-xl font-black">Consumo por proveedor</h3><p className="text-sm text-muted-foreground">Cuánto se compró a cada proveedor en el rango seleccionado.</p></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Proveedor</TableHead><TableHead className="text-right">Importe</TableHead><TableHead className="text-right">% del total</TableHead></TableRow></TableHeader><TableBody>{expenseBySupplier.length === 0 && <TableRow><TableCell colSpan={3} className="py-10 text-center text-muted-foreground">No hay proveedores para estos filtros.</TableCell></TableRow>}{expenseBySupplier.map((row) => <TableRow key={row.supplier}><TableCell className="font-bold">{row.supplier}</TableCell><TableCell className="text-right font-black">{money(row.amount)}</TableCell><TableCell className="text-right text-muted-foreground">{expenseAnalysisTotal ? (row.amount / expenseAnalysisTotal * 100).toLocaleString("es-AR", { maximumFractionDigits: 1 }) : "0"}%</TableCell></TableRow>)}</TableBody></Table></div></div>
         </div>
         <div className="overflow-hidden rounded-3xl border bg-white shadow-sm"><div className="flex flex-col gap-2 border-b p-5 sm:flex-row sm:items-end sm:justify-between"><div><h3 className="text-xl font-black">Detalle de gastos</h3><p className="text-sm text-muted-foreground">Cada renglón conserva proveedor, comprobante, categoría y destino.</p></div><p className="text-sm font-bold">{filteredExpenseAnalysisRows.length} movimientos · {money(expenseAnalysisTotal)}</p></div><div className="overflow-x-auto"><Table><TableHeader><TableRow><TableHead>Fecha</TableHead><TableHead>Destino</TableHead><TableHead>Tipo / categoría</TableHead><TableHead>Concepto</TableHead><TableHead>Proveedor / comprobante</TableHead><TableHead className="text-right">Importe</TableHead></TableRow></TableHeader><TableBody>{filteredExpenseAnalysisRows.length === 0 && <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">No hay gastos que coincidan con los filtros.</TableCell></TableRow>}{filteredExpenseAnalysisRows.map((row) => <TableRow key={row.id}><TableCell className="whitespace-nowrap">{new Date(`${row.date}T12:00:00`).toLocaleDateString("es-AR")}</TableCell><TableCell><Badge variant="outline">{row.center}</Badge></TableCell><TableCell><div className="font-bold">{categoryLabel(row.category)}</div><div className="text-xs text-muted-foreground">{row.kind === "material" ? "Materia prima" : row.kind === "service" ? "Servicio" : "Otro gasto"}</div></TableCell><TableCell>{row.concept}</TableCell><TableCell><div className="font-medium">{row.supplier}</div><div className="text-xs text-muted-foreground">{row.invoice}</div></TableCell><TableCell className="text-right font-black">{money(row.amount)}</TableCell></TableRow>)}</TableBody></Table></div></div>
       </div>}
