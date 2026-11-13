@@ -60,6 +60,12 @@ export async function POST(request: Request) {
       return response({ ok: true });
     }
     const { supabase, token } = await context(request);
+    if (body.action === "saved-link") {
+      if (token) throw new Error("Acceso no autorizado.");
+      const result = await supabase.rpc("orders_saved_link", { p_client: body.clientId, p_token: body.token ?? null });
+      if (result.error) throw new Error(result.error.message);
+      return response({ token: result.data });
+    }
     if (body.action === "catalog") {
       if (token) throw new Error("Acceso no autorizado.");
       const result = await supabase.rpc("orders_catalog", { p_client: body.clientId, p_products: body.products ?? null });
