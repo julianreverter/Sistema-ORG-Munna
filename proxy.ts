@@ -13,8 +13,9 @@ export async function proxy(request: NextRequest) {
       },
     },
   });
-  const { data: { user } } = await supabase.auth.getUser();
   const pathname = request.nextUrl.pathname;
+  if (pathname === "/pedidos" || pathname === "/api/orders") return response;
+  const { data: { user } } = await supabase.auth.getUser();
   const isLogin = pathname === "/login";
   const isPublicSystemRoute = pathname === "/api/health" || pathname === "/robots.txt" || pathname === "/sitemap.xml";
   if (isPublicSystemRoute) return response;
