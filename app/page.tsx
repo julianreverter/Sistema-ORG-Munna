@@ -628,6 +628,25 @@ function Dashboard({ setView, role, currentUser, stock, history }: { setView: (v
   );
 }
 
+const productionDayFormat = new Intl.DateTimeFormat("sv-SE", {
+  timeZone: "America/Argentina/Buenos_Aires",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+function productionLabelDates(productionDay: string) {
+  const [year, month, day] = productionDay.split("-");
+  const expiryYear = Number(year) + 1;
+  const lastDayOfExpiryMonth = new Date(Date.UTC(expiryYear, Number(month), 0)).getUTCDate();
+  const expiryDay = String(Math.min(Number(day), lastDayOfExpiryMonth)).padStart(2, "0");
+  return {
+    elaboration: `${day}/${month}/${year}`,
+    expiration: `${expiryDay}/${month}/${expiryYear}`,
+    lot: `${day}${month}${year.slice(-2)}-CHM-01`,
+  };
+}
+
 function Production({
   records,
   onRegister,
@@ -635,12 +654,24 @@ function Production({
   responsibleOptions,
 }: {
   records: ProductionRecord[];
-  onRegister: (record: ProductionRecord) => Promise<ProductionRecord>;
+  onRegister: (record: ProductionRecord) => Promise<ProductionRecord & { producedAt: string }>;
   onFinalize: () => void;
   responsibleOptions: StaffMember[];
 }) {
   const [saved, setSaved] = useState(false);
   const [savedCode, setSavedCode] = useState("");
+  const [savedProductionDay, setSavedProductionDay] = useState("");
+  const [currentProductionDay, setCurrentProductionDay] = useState(() => productionDayFormat.format(new Date()));
+  useEffect(() => {
+    const refreshProductionDay = () => setCurrentProductionDay(productionDayFormat.format(new Date()));
+    const timer = window.setInterval(refreshProductionDay, 1000);
+    window.addEventListener("focus", refreshProductionDay);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshProductionDay);
+    };
+  }, []);
+  const labelDates = productionLabelDates(saved ? savedProductionDay : currentProductionDay);
   const savedLabel = useRef("");
   const registration = useRef<{ key: string; id: string } | null>(null);
   const registrationInProgress = useRef(false);
@@ -776,7 +807,7 @@ function Production({
           <label className="space-y-2 text-sm font-bold">
             Vencimiento
             <Input
-              value="27/08/2027"
+              value={labelDates.expiration}
               readOnly
               className="h-11 rounded-xl font-normal"
             />
@@ -810,9 +841,16 @@ function Production({
                 price: selectedProduct.price,
                 presentation: selectedProduct.presentation,
               });
+              const registeredDay = productionDayFormat.format(new Date(registered.producedAt));
+              const registeredDates = productionLabelDates(registeredDay);
+              frozenLabel.querySelectorAll<HTMLElement>("[data-label-date]").forEach((node) => {
+                const field = node.dataset.labelDate as keyof typeof registeredDates;
+                node.textContent = registeredDates[field];
+              });
               const html = productionLabelHtml(frozenLabel, registered.uniqueCode);
               savedLabel.current = html;
               setSavedCode(registered.uniqueCode);
+              setSavedProductionDay(registeredDay);
               setSaved(true);
               registration.current = null;
               if (!printProductionLabel(printWindow, html)) {
@@ -906,9 +944,9 @@ function Production({
           </div>
 
           <div className="grid min-h-0 grid-cols-3 items-center gap-2 overflow-hidden text-[8px] leading-[9px]">
-            <p><b>Elaboración</b><br />27/08/2026</p>
-            <p><b>Vencimiento</b><br />27/08/2027</p>
-            <p><b>Lote</b><br />270826-CHM-01</p>
+            <p><b>Elaboración</b><br /><span data-label-date="elaboration">{labelDates.elaboration}</span></p>
+            <p><b>Vencimiento</b><br /><span data-label-date="expiration">{labelDates.expiration}</span></p>
+            <p><b>Lote</b><br /><span data-label-date="lot">{labelDates.lot}</span></p>
           </div>
 
           <div className="label-footer min-h-0 grid grid-cols-[1fr_170px] items-start gap-2 overflow-hidden border-t border-black pt-1">
@@ -3834,6 +3872,8 @@ export default function Home() {
                 const result = await response.json() as { error?: string; unit?: { id: number; status?: string; created_at?: string; unique_code?: string } };
                 if (!response.ok) throw new Error(result.error ?? "No se pudo registrar la producción.");
                 if (!result.unit?.unique_code) throw new Error("No se confirmó el código de la unidad. No imprimas la etiqueta; recargá la página.");
+                const producedAt = result.unit.created_at;
+                if (!producedAt || !Number.isFinite(Date.parse(producedAt))) throw new Error("No se confirmó la fecha de elaboración. No imprimas la etiqueta.");
                 record = { ...record, uniqueCode: result.unit.unique_code };
                 setShiftRecords((current) => [...current.filter((row) => row.uniqueCode !== record.uniqueCode), record]);
                 setProductionRecords((current) => [...current.filter((row) => row.uniqueCode !== record.uniqueCode), record]);
@@ -3848,12 +3888,12 @@ export default function Home() {
                   units: record.units,
                   responsible: record.responsible,
                   status: result.unit?.status ?? "stock",
-                  producedAt: result.unit?.created_at ?? new Date().toISOString(),
+                  producedAt,
                   dispatchedAt: null,
                   remittanceNumber: null,
                   clientName: null,
                 }, ...current.filter((row) => row.uniqueCode !== record.uniqueCode)]);
-                return record;
+                return { ...record, producedAt };
               }}
               onFinalize={() => setShiftRecords([])}
               responsibleOptions={staff}
