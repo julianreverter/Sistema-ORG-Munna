@@ -2759,6 +2759,7 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
   const [purchases, setPurchases] = useState<CostPurchaseRow[]>([]);
   const [payments, setPayments] = useState<SupplierPaymentRow[]>([]);
   const [suppliers, setSuppliers] = useState<SupplierCostProfile[]>([]);
+  const [supplierQuery, setSupplierQuery] = useState("");
   const [supplierOpen, setSupplierOpen] = useState(false);
   const [savingSupplier, setSavingSupplier] = useState(false);
   const [supplierError, setSupplierError] = useState("");
@@ -2851,6 +2852,9 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
       .replace(/[\u0300-\u036f]/g, "")
       .includes(normalizedFormulaQuery);
   });
+  const filteredSuppliers = suppliers.filter((row) =>
+    comboboxWordFilter(`${row.name} ${row.category || "Sin categoría"}`, supplierQuery),
+  );
   const filteredMaterials = materials.filter((item) => {
     const query = materialQuery.trim().toLocaleLowerCase("es-AR");
     if (!query) return true;
@@ -3542,11 +3546,27 @@ function Costs({ initialPurchaseOpen = false }: { initialPurchaseOpen?: boolean 
           <div><h3 className="text-xl font-black">Proveedores</h3><p className="text-sm text-muted-foreground">Perfiles, condición fiscal y cuenta corriente real.</p></div>
           <Button onClick={openNewSupplier} className="rounded-xl bg-[#3b2931] text-white"><Plus /> Nuevo proveedor</Button>
         </div>
+        <div className="relative w-full sm:max-w-sm">
+          <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            type="search"
+            aria-label="Buscar proveedores por nombre o categoría"
+            placeholder="Buscar por nombre o categoría"
+            value={supplierQuery}
+            onChange={(event) => setSupplierQuery(event.target.value)}
+            className="bg-white pl-9"
+          />
+        </div>
         {supplierMessage && <p className="rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-800">{supplierMessage}</p>}
         {supplierError && !supplierOpen && <p className="rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{supplierError}</p>}
         {suppliers.length === 0 && <div className="rounded-3xl border border-dashed bg-white p-10 text-center text-muted-foreground">Todavía no hay proveedores cargados.</div>}
+        {suppliers.length > 0 && filteredSuppliers.length === 0 && (
+          <p role="status" className="rounded-3xl border border-dashed bg-white p-10 text-center text-muted-foreground">
+            No hay proveedores que coincidan con la búsqueda.
+          </p>
+        )}
         <div className="grid gap-5 lg:grid-cols-3">
-          {suppliers.map((row) => <div key={row.id} className={`rounded-3xl border bg-white p-6 shadow-sm ${selectedSupplierName === row.name ? "ring-2 ring-[#c45c82]" : ""}`}>
+          {filteredSuppliers.map((row) => <div key={row.id} className={`rounded-3xl border bg-white p-6 shadow-sm ${selectedSupplierName === row.name ? "ring-2 ring-[#c45c82]" : ""}`}>
             <div className="flex items-start justify-between">
               <div className="grid size-11 place-items-center rounded-2xl bg-[#f8dce7] font-black text-[#a53d67]">{row.name.slice(0,2).toUpperCase()}</div>
               <div className="flex flex-col items-end gap-2"><Badge variant="outline">{row.debt ? "Saldo pendiente" : "Sin deuda"}</Badge><Badge className={row.taxMode === "Con IVA" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-700"}>{row.taxMode}</Badge></div>
